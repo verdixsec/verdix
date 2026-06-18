@@ -1,0 +1,12 @@
+# Included by with_include_main.yaml — tests that include: resolution works
+vars:
+  address-groups:
+    HOME_NET: "[10.10.0.0/16, 10.20.0.0/16]"
+    EXTERNAL_NET: "!$HOME_NET"
+    DNS_SERVERS: "[10.10.1.1]"
+    HTTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "80"
+    SSH_PORTS: 22

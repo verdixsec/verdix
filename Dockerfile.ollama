@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Dillon Jayanthan
+# Verdix — Fat Ollama image (model baked in)
+#
+# Bakes gemma4:e4b-it-q8_0 (~7 GB) into the image layer so users get a
+# clean first-run experience with no model download after docker compose up.
+#
+# Build and push (run once; repeat only when the model changes):
+#   docker login ghcr.io -u <github-username>
+#   docker build -f Dockerfile.ollama -t ghcr.io/verdixsec/verdix/llm:latest .
+#   docker push ghcr.io/verdixsec/verdix/llm:latest
+#   (requires internet access at build time; model pull takes 10-20 min)
+
+FROM ollama/ollama:latest
+
+# Pull the model during image build.
+# The while-loop waits for the Ollama daemon to be ready before pulling,
+# which avoids "connection refused" errors on slow build machines.
+RUN ollama serve & \
+    while ! ollama list >/dev/null 2>&1; do sleep 1; done && \
+    ollama pull gemma4:e4b-it-q8_0

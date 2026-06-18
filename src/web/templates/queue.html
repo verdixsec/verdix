@@ -1,0 +1,250 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 Dillon Jayanthan -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verdix -- Alert Queue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="/static/verdix-favicon.svg" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #0a0d12; color: #e4e7ec; font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  a { color: inherit; text-decoration: none; }
+
+  /* === Header === */
+  .header { background: #0f1318; border-bottom: 1px solid #1a2030; padding: 0 24px; height: 48px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
+  .wordmark { display: flex; align-items: center; gap: 8px; }
+  .wordmark-mark { width: 20px; height: 20px; flex-shrink: 0; }
+  .wordmark-text { font-family: 'Space Grotesk', 'Inter Tight', system-ui, sans-serif; font-size: 16px; font-weight: 600; letter-spacing: -0.6px; color: #e4e7ec; line-height: 1; }
+  .ea-badge { font-size: 10px; font-weight: 500; color: #3C3489; background: #EEEDFE; border: 1px solid #CECBF6; padding: 2px 8px; border-radius: 8px; }
+  .header-spacer { flex: 1; }
+  .queue-panel { font-size: 12px; color: #8b95a7; display: flex; align-items: center; gap: 8px; }
+  .queue-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c984; }
+  .queue-dot.warn { background: #f5a624; box-shadow: 0 0 6px rgba(245,166,36,0.5); }
+  .queue-dot.red { background: #ff4e5b; box-shadow: 0 0 6px rgba(255,78,91,0.5); }
+  .header-link { font-size: 12px; color: #6b7587; padding: 4px 10px; border-radius: 4px; transition: color 0.15s, background 0.15s; cursor: pointer; border: none; background: none; }
+  .header-link:hover { color: #b8c1d0; background: rgba(255,255,255,0.04); }
+  form.logout-form { display: inline; }
+
+  /* === Content === */
+  .content { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+
+  /* === Window selector === */
+  .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .window-tabs { display: flex; gap: 4px; }
+  .window-tab { padding: 5px 14px; border-radius: 5px; font-size: 12.5px; font-weight: 500; border: 1px solid #1a2030; color: #8b95a7; background: transparent; cursor: pointer; transition: all 0.15s; text-decoration: none; }
+  .window-tab:hover { border-color: #2a3447; color: #b8c1d0; }
+  .window-tab.active { background: #1a2030; border-color: #2a3447; color: #e4e7ec; }
+  .count-label { font-size: 12px; color: #6b7587; }
+  /* === Status filter tabs === */
+  .status-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .status-tabs { display: flex; gap: 4px; }
+  .status-tab { padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 500; color: #6b7587; background: transparent; cursor: pointer; transition: all 0.15s; text-decoration: none; border: 1px solid transparent; }
+  .status-tab:hover { color: #b8c1d0; background: rgba(255,255,255,0.03); }
+  .status-tab.active { background: #1a2030; border-color: #2a3447; color: #e4e7ec; }
+  .tab-count { font-size: 10px; background: rgba(139,149,167,0.15); padding: 1px 5px; border-radius: 8px; margin-left: 4px; }
+
+  /* === Table === */
+  .table-wrap { border: 1px solid #1a2030; border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: #0c1015; }
+  th { padding: 9px 14px; text-align: left; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7587; border-bottom: 1px solid #1a2030; white-space: nowrap; }
+  tr.alert-row { border-bottom: 1px solid #141923; transition: background 0.1s; cursor: pointer; }
+  tr.alert-row:last-child { border-bottom: none; }
+  tr.alert-row:hover { background: rgba(59,130,246,0.04); }
+  td { padding: 10px 14px; vertical-align: middle; }
+  td.ts { font-size: 11.5px; color: #8b9db8; white-space: nowrap; font-family: 'JetBrains Mono', monospace; }
+  td.sig { font-size: 13px; color: #d4d9e2; max-width: 320px; }
+  td.sig .sig-name { font-weight: 500; }
+  td.sig .sig-count { font-size: 10.5px; color: #6b7587; background: #1a2030; padding: 1px 6px; border-radius: 10px; margin-left: 6px; }
+  td.network { font-size: 12px; color: #8b95a7; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+  td.verdict-cell { white-space: nowrap; }
+  td.status-cell { font-size: 11.5px; white-space: nowrap; }
+
+  /* verdict badges */
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 3px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .badge-tp   { background: rgba(255,78,91,0.15); color: #ff8a92; border: 1px solid rgba(255,78,91,0.30); }
+  .badge-inv  { background: rgba(245,166,36,0.12); color: #f5b54d; border: 1px solid rgba(245,166,36,0.30); }
+  .badge-fp   { background: rgba(34,201,132,0.12); color: #6dd5a3; border: 1px solid rgba(34,201,132,0.25); }
+  .badge-pend { background: rgba(139,149,167,0.08); color: #8b95a7; border: 1px solid rgba(139,149,167,0.20); }
+
+  /* status text */
+  .st-analyzed { color: #6b7587; }
+  .st-queued   { color: #60a5fa; }
+  .st-deferred { color: #f5a624; }
+  .st-failed   { color: #ff4e5b; }
+  .st-analyzing { color: #a78bfa; }
+
+  /* sev badge */
+  .sev { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-right: 6px; font-family: 'JetBrains Mono', monospace; }
+  .sev-1 { background: rgba(255,78,91,0.15); color: #ff8a92; }
+  .sev-2 { background: rgba(245,166,36,0.12); color: #f5b54d; }
+  .sev-3 { background: rgba(139,149,167,0.08); color: #8b95a7; }
+
+  /* empty state */
+  .empty { text-align: center; padding: 60px 24px; color: #4a5468; }
+  .empty-icon { font-size: 32px; margin-bottom: 12px; }
+  .empty-title { font-size: 15px; color: #6b7587; margin-bottom: 6px; }
+  .empty-sub { font-size: 12.5px; }
+
+  /* confidence */
+  .conf { font-size: 11px; color: #6b7587; margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="wordmark">
+    <svg class="wordmark-mark" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <path d="M22 52 L42 74 L80 26" stroke="#7F77DD" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="wordmark-text">verdix</span>
+  </div>
+  <span class="ea-badge">Early Access</span>
+  <div class="header-spacer"></div>
+
+  <div class="queue-panel" id="queuePanel">
+    {% if queued_count > 0 %}
+      <span class="queue-dot warn"></span>
+      <span>{{ queued_count }} queued{% if time_behind %} &middot; {{ time_behind }}{% endif %}{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
+    {% elif analyzing_count > 0 %}
+      <span class="queue-dot warn"></span>
+      <span>analyzing&hellip;{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
+    {% elif failed_count > 0 %}
+      <span class="queue-dot red"></span>
+      <span>{{ failed_count }} failed{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
+    {% else %}
+      <span class="queue-dot"></span>
+      <span>Queue clear{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
+    {% endif %}
+  </div>
+
+  <button type="button" class="header-link" onclick="openFeedbackModal()">Send Feedback</button>
+  <form class="logout-form" method="post" action="/logout">
+    <button class="header-link" type="submit">Logout</button>
+  </form>
+</div>
+
+<div class="content">
+  <div class="toolbar">
+    <div class="window-tabs">
+      <a href="/queue?window=24h&status={{ status_filter }}" class="window-tab {% if window == '24h' %}active{% endif %}">24h</a>
+      <a href="/queue?window=7d&status={{ status_filter }}"  class="window-tab {% if window == '7d'  %}active{% endif %}">7d</a>
+      <a href="/queue?window=30d&status={{ status_filter }}" class="window-tab {% if window == '30d' %}active{% endif %}">30d</a>
+    </div>
+    <span class="count-label">{{ total }} alert{{ 's' if total != 1 else '' }}</span>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-tabs">
+      <a href="/queue?window={{ window }}&status=all"      class="status-tab {% if status_filter == 'all'      %}active{% endif %}">All</a>
+      <a href="/queue?window={{ window }}&status=analyzed" class="status-tab {% if status_filter == 'analyzed' %}active{% endif %}">Analyzed</a>
+      <a href="/queue?window={{ window }}&status=queued"   class="status-tab {% if status_filter == 'queued'   %}active{% endif %}">Queued</a>
+      <a href="/queue?window={{ window }}&status=deferred" class="status-tab {% if status_filter == 'deferred' %}active{% endif %}">Deferred{% if deferred_count %}<span class="tab-count">{{ deferred_count }}</span>{% endif %}</a>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    {% if rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Signature</th>
+          <th>Source &rarr; Destination</th>
+          <th>Verdict</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="alert-row" onclick="location.href='/alert/{{ row.alert_id }}'">
+          <td class="ts">
+            {% if row.event_timestamp %}
+              {{ row.event_timestamp[:16].replace('T', ' ') }} UTC
+            {% else %}--{% endif %}
+          </td>
+          <td class="sig">
+            {% if row.signature_severity %}
+              <span class="sev sev-{{ row.signature_severity }}">S{{ row.signature_severity }}</span>
+            {% endif %}
+            <span class="sig-name">{{ row.signature_msg or 'Unknown' }}</span>
+            {% if row.count > 1 %}
+              <span class="sig-count">&times;{{ row.count }}</span>
+            {% endif %}
+          </td>
+          <td class="network">
+            {{ row.src_ip or '?' }}{% if row.src_port %}:{{ row.src_port }}{% endif %}
+            &rarr;
+            {{ row.dst_ip or '?' }}{% if row.dst_port %}:{{ row.dst_port }}{% endif %}
+            {% if row.app_proto %}<span style="color:#6b7587;"> &middot; {{ row.app_proto }}</span>{% endif %}
+          </td>
+          <td class="verdict-cell">
+            {% if row.verdict_category == 'likely_tp' %}
+              <div><span class="badge badge-tp">TP</span></div>
+              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+            {% elif row.verdict_category == 'suspicious_investigate' %}
+              <div><span class="badge badge-inv">Investigate</span></div>
+              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+            {% elif row.verdict_category == 'likely_fp' %}
+              <div><span class="badge badge-fp">FP</span></div>
+              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+            {% else %}
+              <span class="badge badge-pend">Pending</span>
+            {% endif %}
+          </td>
+          <td class="status-cell">
+            {% set st = row.status %}
+            {% if st == 'analyzed' %}<span class="st-analyzed">analyzed</span>
+            {% elif st == 'queued' %}<span class="st-queued">queued</span>
+            {% elif st == 'deferred' %}<span class="st-deferred">deferred</span>
+            {% elif st == 'failed' %}<span class="st-failed">&#9888; failed</span>
+            {% elif st == 'analyzing' %}<span class="st-analyzing">analyzing&hellip;</span>
+            {% else %}<span class="st-queued">{{ st }}</span>{% endif %}
+            {% if row.disposition_id %}<span style="font-size:10px;color:#4a5468;display:block;">dispositioned</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <div class="empty-icon">&#128270;</div>
+      <div class="empty-title">No alerts in the last {{ window }}</div>
+      <div class="empty-sub">Alerts will appear here as Verdix ingests eve.json.</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+  // Refresh queue depth panel every 15s; reload table if alerts are still processing.
+  var _deferredCount = {{ deferred_count }};
+  setInterval(function() {
+    fetch('/api/queue-depth').then(function(r) { return r.json(); }).then(function(d) {
+      var panel = document.getElementById('queuePanel');
+      if (!panel) return;
+      var deferredSuffix = _deferredCount > 0 ? ' &middot; ' + _deferredCount + ' deferred' : '';
+      if (d.queued > 0) {
+        panel.innerHTML = '<span class="queue-dot warn"></span><span>' + d.queued + ' queued'
+          + (d.time_behind ? ' &middot; ' + d.time_behind : '') + deferredSuffix + '</span>';
+        location.reload();
+      } else if (d.analyzing > 0) {
+        panel.innerHTML = '<span class="queue-dot warn"></span><span>analyzing&hellip;' + deferredSuffix + '</span>';
+        location.reload();
+      } else if (d.failed > 0) {
+        panel.innerHTML = '<span class="queue-dot red"></span><span>' + d.failed + ' failed' + deferredSuffix + '</span>';
+      } else {
+        panel.innerHTML = '<span class="queue-dot"></span><span>Queue clear' + deferredSuffix + '</span>';
+      }
+    }).catch(function() {});
+  }, 15000);
+</script>
+{% include '_feedback_modal.html' %}
+</body>
+</html>

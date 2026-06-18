@@ -1,0 +1,51 @@
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Internal planning documents (private — not for distribution) ──────────────
+CLAUDE.md
+docs/
+
+# ── Eval corpus and fixtures (not needed at runtime) ──────────────────────────
+eval/data/
+eval/fixtures/
+
+# ── Dev/validation scripts ────────────────────────────────────────────────────
+scripts/
+validation_results/
+
+# ── Root-level non-essential files ────────────────────────────────────────────
+*.md
+*.ps1
+*.txt
+!requirements.txt
+
+# ── Python cache and build artifacts ─────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ── Local databases (runtime state — never in image) ─────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Secrets and local config ──────────────────────────────────────────────────
+.env
+.env.*
+!example.env
+
+# ── Local dev/test feedback receiver (standalone deployment, not in app) ───────
+server/
+
+# ── Session continuity files ──────────────────────────────────────────────────
+2026-*.txt
+data/

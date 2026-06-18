@@ -1,0 +1,169 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 Dillon Jayanthan -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verdix -- System Setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="/static/verdix-favicon.svg" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #0a0d12; color: #e4e7ec; font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .page { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 60px 20px 40px; }
+  .card { width: 100%; max-width: 740px; background: #0f1318; border: 1px solid #1a2030; border-radius: 10px; padding: 32px 36px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
+  .card-header { display: flex; align-items: center; gap: 10px; padding-bottom: 20px; border-bottom: 1px solid #1a2030; margin-bottom: 24px; }
+  .wordmark { display: flex; align-items: center; gap: 9px; }
+  .wordmark-mark { width: 22px; height: 22px; flex-shrink: 0; }
+  .wordmark-text { font-family: 'Space Grotesk', 'Inter Tight', system-ui, sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.6px; color: #e4e7ec; line-height: 1; }
+  .ea-badge { font-size: 10px; font-weight: 500; color: #3C3489; background: #EEEDFE; border: 1px solid #CECBF6; padding: 3px 8px; border-radius: 8px; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: #f5f7fa; margin-bottom: 6px; }
+  .subtitle { color: #8b95a7; font-size: 13.5px; margin-bottom: 26px; }
+  .section { border: 1px solid #1a2030; border-radius: 8px; margin-bottom: 14px; overflow: hidden; background: #0c1015; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid #1a2030; background: rgba(255,255,255,0.01); }
+  .section-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.10em; text-transform: uppercase; color: #8b95a7; }
+  .section-tag { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 3px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .tag-required { color: #ff4e5b; background: rgba(255,78,91,0.10); border: 1px solid rgba(255,78,91,0.30); }
+  .tag-warn { color: #8b95a7; background: rgba(139,149,167,0.08); border: 1px solid rgba(139,149,167,0.20); }
+  .tag-info { color: #60a5fa; background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.25); }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #141923; }
+  .row:last-child { border-bottom: none; }
+  .status-icon { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+  .status-ok  { background: rgba(34,201,132,0.12); color: #22c984; box-shadow: 0 0 0 1px rgba(34,201,132,0.30) inset; }
+  .status-error { background: rgba(255,78,91,0.12); color: #ff4e5b; box-shadow: 0 0 0 1px rgba(255,78,91,0.35) inset; }
+  .status-warn  { background: rgba(245,166,36,0.12); color: #f5a624; box-shadow: 0 0 0 1px rgba(245,166,36,0.35) inset; }
+  .status-info  { background: rgba(96,165,250,0.12); color: #60a5fa; box-shadow: 0 0 0 1px rgba(96,165,250,0.30) inset; }
+  .row-label { font-size: 13.5px; color: #e4e7ec; font-weight: 500; min-width: 175px; }
+  .row-detail { flex: 1; font-size: 12.5px; color: #8b95a7; line-height: 1.45; }
+  .row-detail .mono { color: #b8c1d0; font-size: 12px; }
+  .row-detail.red { color: #ff8a92; }
+  .row-detail.amber { color: #f5b54d; }
+  .row-detail.blue { color: #93c0fa; }
+  .card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 20px; border-top: 1px solid #1a2030; }
+  .card-footer-left { font-size: 12.5px; color: #6b7587; }
+  .card-footer-right { display: flex; gap: 10px; }
+  .btn { font-family: 'Inter Tight', sans-serif; font-size: 13px; font-weight: 500; padding: 9px 18px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+  .btn-secondary { background: transparent; border-color: #2a3447; color: #b8c1d0; }
+  .btn-secondary:hover { border-color: #3a4458; background: rgba(255,255,255,0.03); color: #e4e7ec; }
+  .btn-primary { background: #3b82f6; color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset; }
+  .btn-primary:hover { background: #4f8ff7; }
+  .btn-primary:disabled { background: #1f2738; color: #4a5468; cursor: not-allowed; box-shadow: none; border-color: #1a2030; }
+  .footer { border-top: 1px solid #1a2030; padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #6b7587; background: #0a0d12; }
+  .footer-left { display: flex; align-items: center; gap: 10px; }
+  .health-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c984; box-shadow: 0 0 8px rgba(34,201,132,0.5); }
+  .footer-right { color: #4a5468; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="card">
+    <div class="card-header">
+      <div class="wordmark">
+        <svg class="wordmark-mark" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+          <path d="M22 52 L42 74 L80 26" stroke="#7F77DD" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="wordmark-text">verdix</span>
+      </div>
+      <span class="ea-badge">Early Access</span>
+    </div>
+    <h1 class="title">System Setup</h1>
+    <p class="subtitle">Verdix checks your environment before opening the dashboard.</p>
+
+    {% macro status_icon(status) %}
+      {% if status == 'ok' %}<div class="status-icon status-ok">&#10003;</div>
+      {% elif status == 'error' %}<div class="status-icon status-error">&#10007;</div>
+      {% elif status == 'warn' %}<div class="status-icon status-warn">&#9888;</div>
+      {% else %}<div class="status-icon status-info">&#9432;</div>{% endif %}
+    {% endmacro %}
+
+    {% macro detail_class(status) %}{% if status == 'error' %}red{% elif status == 'warn' %}amber{% elif status == 'info' %}blue{% endif %}{% endmacro %}
+
+    <!-- Core Requirements -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-label">Core Requirements</span>
+        <span class="section-tag tag-required">Required</span>
+      </div>
+      {% for item in health.core %}
+      <div class="row">
+        {{ status_icon(item.status) }}
+        <div class="row-label">{{ item.label }}</div>
+        <div class="row-detail {{ detail_class(item.status) }}">{{ item.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- System Resources -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-label">System Resources</span>
+        <span class="section-tag tag-warn">Performance</span>
+      </div>
+      {% for item in health.resources %}
+      <div class="row">
+        {{ status_icon(item.status) }}
+        <div class="row-label">{{ item.label }}</div>
+        <div class="row-detail {{ detail_class(item.status) }}">{{ item.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Network -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-label">Network</span>
+        <span class="section-tag tag-warn">Connectivity</span>
+      </div>
+      {% for item in health.network %}
+      <div class="row">
+        {{ status_icon(item.status) }}
+        <div class="row-label">{{ item.label }}</div>
+        <div class="row-detail {{ detail_class(item.status) }}">{{ item.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Enrichment -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-label">Enrichment</span>
+        <span class="section-tag tag-info">Optional</span>
+      </div>
+      {% for item in health.enrichment %}
+      <div class="row">
+        {{ status_icon(item.status) }}
+        <div class="row-label">{{ item.label }}</div>
+        <div class="row-detail {{ detail_class(item.status) }}">{{ item.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="card-footer">
+      <div class="card-footer-left">
+        {% if not health.all_required_ok %}
+          Fix required items in <span class="mono" style="color:#b8c1d0;">docker-compose.yml</span>, then click Retry.
+        {% else %}
+          All required checks passed.
+        {% endif %}
+      </div>
+      <div class="card-footer-right">
+        <a href="/setup/health" class="btn btn-secondary">&#8635; Retry</a>
+        <a href="/login" class="btn btn-primary" {% if not health.all_required_ok %}style="pointer-events:none;opacity:0.4;"{% endif %}>
+          Go to Dashboard &rarr;
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <div class="footer-left"><span class="health-dot"></span><span>Verdix</span></div>
+  <div class="footer-right mono">v0.1.0-early-access</div>
+</div>
+</body>
+</html>

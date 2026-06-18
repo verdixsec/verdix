@@ -1,0 +1,195 @@
+{
+  "_comment": "VT API response fixtures keyed by 'type:value'. Derived from analyst ground-truth labels in the eval corpus. Used in harness fixture mode so re-baseline runs are deterministic regardless of current VT reputation data.",
+
+  "ip:188.227.106.13": {
+    "data": {
+      "type": "ip_address",
+      "id": "188.227.106.13",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 15, "suspicious": 2, "harmless": 65, "undetected": 8, "timeout": 0 },
+        "reputation": -50,
+        "_label": "RIG Exploit Kit server (June 2023 campaign)"
+      }
+    }
+  },
+
+  "ip:62.204.41.175": {
+    "data": {
+      "type": "ip_address",
+      "id": "62.204.41.175",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 20, "suspicious": 1, "harmless": 62, "undetected": 7, "timeout": 0 },
+        "reputation": -55,
+        "_label": "Malware loader / Redline Stealer C2 (RIG EK chain)"
+      }
+    }
+  },
+
+  "ip:206.166.251.62": {
+    "data": {
+      "type": "ip_address",
+      "id": "206.166.251.62",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 20, "suspicious": 0, "harmless": 63, "undetected": 7, "timeout": 0 },
+        "reputation": -58,
+        "_label": "IcedID installer server (March 2023 campaign)"
+      }
+    }
+  },
+
+  "ip:195.20.17.21": {
+    "data": {
+      "type": "ip_address",
+      "id": "195.20.17.21",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 18, "suspicious": 1, "harmless": 64, "undetected": 7, "timeout": 0 },
+        "reputation": -52,
+        "_label": "IcedID C2 server (March 2023 campaign)"
+      }
+    }
+  },
+
+  "ip:31.220.50.207": {
+    "data": {
+      "type": "ip_address",
+      "id": "31.220.50.207",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 25, "suspicious": 2, "harmless": 56, "undetected": 7, "timeout": 0 },
+        "reputation": -65,
+        "_label": "Cobalt Strike C2 server (IcedID post-exploitation)"
+      }
+    }
+  },
+
+  "ip:193.239.85.16": {
+    "data": {
+      "type": "ip_address",
+      "id": "193.239.85.16",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 22, "suspicious": 1, "harmless": 60, "undetected": 7, "timeout": 0 },
+        "reputation": -60,
+        "_label": "BackConnect C2 server (IcedID post-exploitation)"
+      }
+    }
+  },
+
+  "ip:5.230.73.157": {
+    "data": {
+      "type": "ip_address",
+      "id": "5.230.73.157",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 17, "suspicious": 1, "harmless": 65, "undetected": 7, "timeout": 0 },
+        "reputation": -48,
+        "_label": "IcedID C2 server (March 2023 campaign)"
+      }
+    }
+  },
+
+  "ip:198.54.117.217": {
+    "data": {
+      "type": "ip_address",
+      "id": "198.54.117.217",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 14, "suspicious": 2, "harmless": 68, "undetected": 6, "timeout": 0 },
+        "reputation": -42,
+        "_label": "FormBook C2 server — *.life campaign"
+      }
+    }
+  },
+
+  "domain:www.configurableba.life": {
+    "data": {
+      "type": "domain",
+      "id": "www.configurableba.life",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 12, "suspicious": 3, "harmless": 68, "undetected": 7, "timeout": 0 },
+        "reputation": -38,
+        "_label": "FormBook CnC domain — in FormBook IOC list"
+      }
+    }
+  },
+
+  "domain:configurableba.life": {
+    "data": {
+      "type": "domain",
+      "id": "configurableba.life",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 12, "suspicious": 3, "harmless": 68, "undetected": 7, "timeout": 0 },
+        "reputation": -38,
+        "_label": "FormBook CnC domain — in FormBook IOC list"
+      }
+    }
+  },
+
+  "domain:www.hg301d.cfd": {
+    "data": {
+      "type": "domain",
+      "id": "www.hg301d.cfd",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 8, "suspicious": 4, "harmless": 70, "undetected": 8, "timeout": 0 },
+        "reputation": -28,
+        "_label": "FormBook DNS beacon — .cfd TLD campaign"
+      }
+    }
+  },
+
+  "domain:hg301d.cfd": {
+    "data": {
+      "type": "domain",
+      "id": "hg301d.cfd",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 8, "suspicious": 4, "harmless": 70, "undetected": 8, "timeout": 0 },
+        "reputation": -28,
+        "_label": "FormBook DNS beacon — .cfd TLD campaign"
+      }
+    }
+  },
+
+  "domain:www.i8ep58.cfd": {
+    "data": {
+      "type": "domain",
+      "id": "www.i8ep58.cfd",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 9, "suspicious": 3, "harmless": 70, "undetected": 8, "timeout": 0 },
+        "reputation": -30,
+        "_label": "FormBook DNS beacon — .cfd TLD campaign"
+      }
+    }
+  },
+
+  "domain:i8ep58.cfd": {
+    "data": {
+      "type": "domain",
+      "id": "i8ep58.cfd",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 9, "suspicious": 3, "harmless": 70, "undetected": 8, "timeout": 0 },
+        "reputation": -30,
+        "_label": "FormBook DNS beacon — .cfd TLD campaign"
+      }
+    }
+  },
+
+  "domain:gtracenep.admaster.cc": {
+    "data": {
+      "type": "domain",
+      "id": "gtracenep.admaster.cc",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 0, "suspicious": 1, "harmless": 75, "undetected": 14, "timeout": 0 },
+        "reputation": 0,
+        "_label": "Ad-tracking subdomain — legitimate advertising network"
+      }
+    }
+  },
+
+  "domain:admaster.cc": {
+    "data": {
+      "type": "domain",
+      "id": "admaster.cc",
+      "attributes": {
+        "last_analysis_stats": { "malicious": 0, "suspicious": 0, "harmless": 76, "undetected": 14, "timeout": 0 },
+        "reputation": 0,
+        "_label": "Advertising network domain"
+      }
+    }
+  }
+}

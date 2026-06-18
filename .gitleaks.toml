@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Dillon Jayanthan
+#
+# Verdix gitleaks configuration. Keeps the full default rule set and adds one
+# narrow allowlist entry for a value that is public by design.
+title = "Verdix gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# The app-feedback token is a single SHARED, PUBLIC anti-junk token that ships
+# with the app in example.env (it must equal the verdix.dev receiver's on-host
+# feedback_token). It is NOT a secret, NOT per-user, and NOT authentication, so
+# its presence in a tracked file is intentional. Allowlist the exact value only
+# — nothing else is relaxed. See docs/feedback-architecture-app.md for the model.
+[allowlist]
+description = "Public shared app-feedback token (ships in example.env by design; not a secret)"
+regexes = [
+  '''9c63171aa966898c055ec5a6cf0d2aadc9f0b259ee63a66223392bfd3a968dff''',
+]

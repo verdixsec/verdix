@@ -1,0 +1,176 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 Dillon Jayanthan -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verdix — Community License</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="/static/verdix-favicon.svg" type="image/svg+xml">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0a0d12; color: #e4e7ec; font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .page { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }
+  .card { width: 100%; max-width: 680px; background: #0f1318; border: 1px solid #1a2030; border-radius: 10px; padding: 32px 36px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
+  .card-header { display: flex; align-items: center; gap: 10px; padding-bottom: 20px; border-bottom: 1px solid #1a2030; margin-bottom: 24px; }
+  .wordmark { display: flex; align-items: center; gap: 9px; }
+  .wordmark-mark { width: 22px; height: 22px; flex-shrink: 0; }
+  .wordmark-text { font-family: 'Space Grotesk', 'Inter Tight', system-ui, sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.6px; color: #e4e7ec; line-height: 1; }
+  .ea-badge { font-size: 10px; font-weight: 500; color: #3C3489; background: #EEEDFE; border: 1px solid #CECBF6; padding: 3px 8px; border-radius: 8px; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: #f5f7fa; margin-bottom: 6px; }
+  .subtitle { color: #8b95a7; font-size: 13.5px; margin-bottom: 22px; }
+  .license-box { background: #080b10; border: 1px solid #1a2030; border-radius: 7px; height: 320px; overflow-y: auto; padding: 20px 22px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: #b8c1d0; margin-bottom: 20px; }
+  .license-box::-webkit-scrollbar { width: 8px; }
+  .license-box::-webkit-scrollbar-track { background: #080b10; }
+  .license-box::-webkit-scrollbar-thumb { background: #1f2738; border-radius: 4px; }
+  .license-box h3 { font-family: 'Inter Tight', sans-serif; font-size: 13.5px; font-weight: 600; color: #e4e7ec; margin-bottom: 4px; }
+  .license-box .lic-copyright { color: #6b7587; margin-bottom: 16px; font-size: 11.5px; }
+  .license-box p { margin-bottom: 14px; }
+  .license-box .clause-title { color: #e4e7ec; font-weight: 500; margin-top: 16px; margin-bottom: 4px; }
+  .license-box ul { margin: 0 0 12px 16px; list-style: none; }
+  .license-box ul li { position: relative; padding-left: 14px; }
+  .license-box ul li::before { content: "--"; position: absolute; left: 0; color: #4a5468; }
+  .license-box a { color: #60a5fa; text-decoration: none; }
+  .license-box a:hover { text-decoration: underline; }
+  .checkbox-row { display: flex; align-items: flex-start; gap: 11px; padding: 14px 16px; background: rgba(59,130,246,0.04); border: 1px solid #1a2030; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color 0.15s, background 0.15s; margin-bottom: 10px; }
+  .checkbox-row:hover { border-color: #2a3447; background: rgba(59,130,246,0.06); }
+  .checkbox-row.checked { border-color: rgba(59,130,246,0.5); background: rgba(59,130,246,0.08); }
+  .checkbox { width: 17px; height: 17px; border-radius: 4px; border: 1.5px solid #3a4458; flex-shrink: 0; margin-top: 1px; display: flex; align-items: center; justify-content: center; transition: all 0.15s; }
+  .checkbox-row.checked .checkbox { background: #3b82f6; border-color: #3b82f6; }
+  .checkbox svg { width: 11px; height: 11px; opacity: 0; transition: opacity 0.15s; }
+  .checkbox-row.checked .checkbox svg { opacity: 1; }
+  .checkbox-label { font-size: 13.5px; color: #d4d9e2; line-height: 1.4; }
+  .gh-link { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; font-size: 12px; color: #6b7587; text-decoration: none; margin-bottom: 22px; transition: color 0.15s; }
+  .gh-link:hover { color: #8b95a7; }
+  .button-row { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+  .btn { font-family: 'Inter Tight', sans-serif; font-size: 13.5px; font-weight: 500; padding: 10px 20px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; transition: all 0.15s; letter-spacing: -0.005em; }
+  .btn-ghost { background: transparent; border-color: #1f2738; color: #8b95a7; }
+  .btn-ghost:hover { border-color: #2a3447; color: #b8c1d0; background: rgba(255,255,255,0.02); }
+  .btn-primary { background: #3b82f6; color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset; }
+  .btn-primary:hover { background: #4f8ff7; }
+  .btn-primary:disabled { background: #1f2738; color: #4a5468; cursor: not-allowed; box-shadow: none; }
+  .decline-warning { display: none; margin-top: 16px; padding: 12px 14px; background: rgba(245,166,36,0.08); border: 1px solid rgba(245,166,36,0.30); border-radius: 6px; font-size: 13px; color: #f5a624; align-items: center; gap: 10px; }
+  .decline-warning.show { display: flex; }
+  .footer { border-top: 1px solid #1a2030; padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #6b7587; background: #0a0d12; }
+  .footer-left { display: flex; align-items: center; gap: 10px; }
+  .health-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c984; box-shadow: 0 0 8px rgba(34,201,132,0.5); }
+  .footer-right { color: #4a5468; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="card">
+    <div class="card-header">
+      <div class="wordmark">
+        <svg class="wordmark-mark" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+          <path d="M22 52 L42 74 L80 26" stroke="#7F77DD" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="wordmark-text">verdix</span>
+      </div>
+      <span class="ea-badge">Early Access</span>
+    </div>
+    <h1 class="title">Before You Begin</h1>
+    <p class="subtitle">Please read and accept the Community License to continue.</p>
+    <div class="license-box">
+      <h3>VERDIX COMMUNITY LICENSE -- Version 1.0</h3>
+      <div class="lic-copyright">Copyright &copy; 2026 Dillon Jayanthan. All rights reserved.</div>
+      <p>By clicking "I Accept," you agree to the following terms for use of the Verdix software ("Software"), distributed as a Docker image.</p>
+      <div class="clause-title">1. GRANT OF USE</div>
+      <p>You are granted a free, non-exclusive, non-transferable right to install and run the Software on your own infrastructure for internal security operations, with a limit of one Suricata sensor per installation.</p>
+      <div class="clause-title">2. WHAT YOU MAY DO</div>
+      <ul>
+        <li>Run the Software internally for your organization's security operations</li>
+        <li>Allow your security analysts to use the Software</li>
+        <li>Inspect the source code on GitHub (published under GNU AGPL v3)</li>
+      </ul>
+      <div class="clause-title">3. WHAT YOU MAY NOT DO</div>
+      <ul>
+        <li>Offer the Software as a service to third parties</li>
+        <li>Monitor more than one Suricata sensor without a Commercial License</li>
+        <li>Remove or alter copyright notices or this license</li>
+        <li>Sublicense, sell, or redistribute the Software</li>
+      </ul>
+      <div class="clause-title">4. EARLY ACCESS</div>
+      <p>This is Early Access software provided for evaluation and operational use. Features may change or be removed. No guarantees of fitness for any particular purpose.</p>
+      <div class="clause-title">5. DATA HANDLING</div>
+      <p>Alert content, IP addresses, and analyst dispositions never leave your network. Verdix sends nothing on its own. The only data that leaves your deployment is what you submit through the in-product feedback button — your feedback message and any context items you choose to include — or a data-deletion request. A random install ID is attached server-side to recognize repeated submissions from this deployment; it is not linked to you, your users, or your network data.</p>
+      <div class="clause-title">6. NO WARRANTY</div>
+      <p>The Software is provided "as is" without warranty of any kind.</p>
+      <div class="clause-title">7. FEEDBACK</div>
+      <p>Feedback submitted through the in-product button may be used to improve the product.</p>
+      <div class="clause-title">8. GOVERNING LAW</div>
+      <p>This agreement is governed by the laws of the State of California, United States, without regard to its conflict of law provisions.</p>
+      <div class="clause-title">9. THIRD-PARTY NOTICES</div>
+      <p>This Software includes the following third-party components, each subject to its own license terms:</p>
+      <ul>
+        <li><strong>Ollama</strong> — MIT License. Source: <a href="https://github.com/ollama/ollama" target="_blank" rel="noopener">github.com/ollama/ollama</a></li>
+        <li><strong>Gemma 4</strong> (default AI model, &ldquo;gemma4:e4b-it-q8_0&rdquo;) — Google Gemma Terms of Use. By using this Software you agree to Google&rsquo;s Gemma Terms of Use, including the prohibition on using model outputs to train competing AI models. Terms: <a href="https://ai.google.dev/gemma/terms" target="_blank" rel="noopener">ai.google.dev/gemma/terms</a></li>
+        <li><strong>DB-IP Community Edition</strong> (GeoIP data) — Creative Commons Attribution 4.0 International (CC BY 4.0). GeoIP data provided by <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP.com</a>.</li>
+      </ul>
+      <p style="margin-top:18px;color:#6b7587;">For multi-sensor support, SSO, and enterprise features, contact us for a Commercial License.</p>
+    </div>
+
+    <form method="post" action="/setup/license" id="eulaForm">
+      <div class="checkbox-row" id="checkboxRow" onclick="toggleCheckbox()">
+        <div class="checkbox">
+          <svg viewBox="0 0 12 12" fill="none"><path d="M2 6L5 9L10 3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <span class="checkbox-label">I have read and agree to the Verdix Community License</span>
+      </div>
+      <input type="hidden" name="accepted" id="acceptedInput" value="false">
+
+      <a href="https://github.com/sirDillonJ/verdix" target="_blank" rel="noopener" class="gh-link">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        View source code on GitHub
+      </a>
+
+      <div class="button-row">
+        <button type="button" class="btn btn-ghost" onclick="declineEula()">I Decline</button>
+        <button type="submit" class="btn btn-primary" id="acceptBtn" disabled>I Accept</button>
+      </div>
+
+      {% if declined %}
+      <div class="decline-warning show">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L15 14H1L8 1Z" stroke="#f5a624" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6V10" stroke="#f5a624" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="12" r="0.75" fill="#f5a624"/></svg>
+        Verdix cannot be used without accepting the Community License.
+      </div>
+      {% else %}
+      <div class="decline-warning" id="declineWarning">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L15 14H1L8 1Z" stroke="#f5a624" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6V10" stroke="#f5a624" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="12" r="0.75" fill="#f5a624"/></svg>
+        Verdix cannot be used without accepting the Community License.
+      </div>
+      {% endif %}
+    </form>
+  </div>
+</div>
+
+<div class="footer">
+  <div class="footer-left">
+    <span class="health-dot"></span>
+    <span class="mono">Verdix</span>
+  </div>
+  <div class="footer-right mono">v0.1.0-early-access</div>
+</div>
+
+<script>
+  function toggleCheckbox() {
+    const row = document.getElementById('checkboxRow');
+    const btn = document.getElementById('acceptBtn');
+    const input = document.getElementById('acceptedInput');
+    row.classList.toggle('checked');
+    const checked = row.classList.contains('checked');
+    btn.disabled = !checked;
+    input.value = checked ? 'true' : 'false';
+    if (checked) document.getElementById('declineWarning').classList.remove('show');
+  }
+  function declineEula() {
+    document.getElementById('declineWarning').classList.add('show');
+  }
+</script>
+</body>
+</html>

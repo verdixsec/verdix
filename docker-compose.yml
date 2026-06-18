@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Dillon Jayanthan
+# Verdix v0.1
+#
+# Quick start:
+#   1. Copy example.env to .env and fill in your values.
+#      VX_ADMIN_PASSWORD, VX_SURICATA_LOG_DIR, and VX_SURICATA_CONFIG_DIR are required.
+#   2. Run:  docker compose up -d
+#      First run pulls ~15 GB (app image + model). Subsequent starts are instant.
+#
+# To stop (keeps all data):  docker compose down
+# To fully uninstall:        docker compose down -v
+
+services:
+
+  app:
+    image: ghcr.io/verdixsec/verdix/app:latest
+    restart: unless-stopped
+    depends_on:
+      llm:
+        condition: service_healthy
+    volumes:
+      - verdix_data:/var/lib/verdix
+
+      # ── Suricata bind mounts (read-only) ──────────────────────────────────────
+      # Set VX_SURICATA_LOG_DIR and VX_SURICATA_CONFIG_DIR in your .env file.
+      # NFS/SMB mounts work here — mount the remote share on this host first,
+      # then point these variables at your mount point.
+      - ${VX_SURICATA_LOG_DIR:-/var/log/suricata}:/host/suricata/logs:ro
+      - ${VX_SURICATA_CONFIG_DIR:-/etc/suricata}:/host/suricata/config:ro
+
+      # Optional: custom CA bundle for TLS-inspecting proxies.
+      # - /path/to/your/ca-bundle.pem:/host/certs/ca-bundle.pem:ro
+
+    environment:
+      # ── Required ──────────────────────────────────────────────────────────────
+      VX_ADMIN_PASSWORD: "${VX_ADMIN_PASSWORD}"
+
+      # ── Paths (match the volume mounts above) ─────────────────────────────────
+      VX_EVE_LOG_PATH: /host/suricata/logs/eve.json
+      VX_SURICATA_CONFIG_PATH: /host/suricata/config/suricata.yaml
+      VX_DB_PATH: /var/lib/verdix/verdix.db
+
+      # ── GeoIP (DB-IP Community Edition, baked into the app image) ─────────────
+      VX_GEOIP_COUNTRY_DB_PATH: /var/lib/verdix/geoip/dbip-country-lite.mmdb
+      VX_GEOIP_ASN_DB_PATH: /var/lib/verdix/geoip/dbip-asn-lite.mmdb
+
+      # ── Enrichment (optional but strongly recommended) ────────────────────────
+      VX_VIRUSTOTAL_API_KEY: "${VX_VIRUSTOTAL_API_KEY:-}"
+
+      # ── Reverse DNS (optional — set to your internal DNS for hostname resolution)
+      VX_DNS_SERVER: "${VX_DNS_SERVER:-}"
+
+      # ── LLM (points to the sibling llm container — no changes needed) ─────────
+      VX_OLLAMA_URL: http://llm:11434/api/chat
+      VX_OLLAMA_MODEL: gemma4:e4b-it-q8_0
+      VX_OLLAMA_TIMEOUT_SECONDS: "600"
+
+      # ── Feedback (optional — leave blank to keep feedback local-only) ─────────
+      VX_FEEDBACK_ENDPOINT: "${VX_FEEDBACK_ENDPOINT:-}"
+      VX_FEEDBACK_TOKEN: "${VX_FEEDBACK_TOKEN:-}"
+
+      # ── Triage tuning (defaults work for most environments) ───────────────────
+      VX_FLOW_CONTEXT_DELAY_SECONDS: "30"
+      VX_TRIAGE_DAILY_CAP: "300"
+      VX_EVE_CONTEXT_RETENTION_DAYS: "7"
+
+      # ── Proxy (uncomment if your network uses a forward proxy) ────────────────
+      # HTTP_PROXY: "http://proxy.example.com:8080"
+      # HTTPS_PROXY: "http://proxy.example.com:8080"
+      # NO_PROXY: "localhost,llm,127.0.0.1"
+
+    ports:
+      - "8080:8080"
+    networks:
+      - internal
+
+  llm:
+    # Fat image — gemma4:e4b-it-q8_0 is baked in. No model download on first run.
+    image: ghcr.io/verdixsec/verdix/llm:latest
+    restart: unless-stopped
+    volumes:
+      - verdix_models:/root/.ollama
+    healthcheck:
+      # Passes once the Ollama server is running and the model is listed.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    # No ports exposed — the app container reaches Ollama via the internal network.
+    # Uncomment to expose Ollama for debugging or the eval harness:
+    # ports:
+    #   - "11434:11434"
+    networks:
+      - internal
+    # GPU acceleration — Ollama uses it transparently when present.
+    # Uncomment if your host has an NVIDIA GPU with nvidia-container-toolkit installed:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  verdix_data:
+    # All persistent state: SQLite database, GeoIP files, enrichment cache.
+    # Survives container restarts and image updates.
+  verdix_models:
+    # Ollama model weights — populated from the fat image on first run,
+    # then persisted here so container restarts load instantly from disk.
+
+networks:
+  internal:
+    driver: bridge

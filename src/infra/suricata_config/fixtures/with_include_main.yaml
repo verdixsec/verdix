@@ -1,0 +1,9 @@
+# Fixture for testing include: directive resolution
+include: included_vars.yaml
+
+outputs:
+  - eve-log:
+      enabled: yes
+
+rule-files:
+  - local.rules

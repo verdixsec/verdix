@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Dillon Jayanthan
+#
+# Local secret-scanning gate. Install once with:
+#     pip install pre-commit && pre-commit install
+# Runs gitleaks on staged changes before every commit so a credential can never
+# land in a tracked file (a leaked Gemini key once rode an eval log to the mirror).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks

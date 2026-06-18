@@ -1,0 +1,348 @@
+{# SPDX-License-Identifier: AGPL-3.0-only #}
+{# Copyright (C) 2026 Dillon Jayanthan #}
+{# Feedback modal — included at the end of queue.html and alert.html.
+   The Send Feedback button calls openFeedbackModal().
+   All data fetched from /api/feedback-context; POSTed to /api/feedback.
+   Users can remove any context item before sending. #}
+
+<dialog id="feedbackModal" style="
+  background:#161b22;border:1px solid #252934;border-radius:10px;
+  padding:0;width:520px;max-width:96vw;max-height:88vh;overflow:hidden;
+  color:#cdd6f4;box-shadow:0 24px 64px rgba(0,0,0,0.6);
+">
+  {# Header #}
+  <div style="display:flex;align-items:center;justify-content:space-between;
+    padding:18px 22px 14px;border-bottom:1px solid #252934;">
+    <span style="font-size:15px;font-weight:600;letter-spacing:.01em">Send Feedback</span>
+    <button onclick="closeFeedbackModal()" style="
+      background:none;border:none;color:#6b7587;cursor:pointer;
+      font-size:20px;line-height:1;padding:2px 6px;border-radius:4px;
+    " title="Close">&times;</button>
+  </div>
+
+  {# Scrollable body #}
+  <div style="overflow-y:auto;max-height:calc(88vh - 130px);padding:20px 22px">
+
+    {# Form view #}
+    <div id="fbForm">
+      <div style="margin-bottom:6px">
+        <label style="display:block;font-size:12px;font-weight:600;
+          color:#6b7587;letter-spacing:.06em;text-transform:uppercase;
+          margin-bottom:6px">Your feedback</label>
+        <textarea id="fbText" rows="4" placeholder="Bug reports, feature requests, general observations…" style="
+          width:100%;box-sizing:border-box;background:#0f1117;
+          border:1px solid #252934;border-radius:6px;color:#cdd6f4;
+          font-size:13.5px;font-family:inherit;padding:10px 12px;
+          resize:vertical;outline:none;
+        "></textarea>
+      </div>
+      <div style="margin-bottom:16px;font-size:11.5px;color:#6b7587">
+        Please don&rsquo;t include alert content, IP addresses, or hostnames.
+      </div>
+
+      <div style="margin-bottom:14px;font-size:12px;color:#8b95a7;line-height:1.5">
+        This feedback and the data shown below are sent to Verdix to improve the
+        product. Nothing else leaves your deployment.
+      </div>
+
+      <div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:8px">
+          <span style="font-size:12px;font-weight:600;color:#6b7587;
+            letter-spacing:.06em;text-transform:uppercase">Context</span>
+          <span style="font-size:11.5px;color:#6b7587">Click &times; to remove any item</span>
+        </div>
+        <div id="fbCtxList" style="
+          background:#0f1117;border:1px solid #252934;border-radius:6px;
+          padding:6px 0;min-height:48px;
+        ">
+          <div id="fbCtxLoading" style="padding:10px 14px;color:#6b7587;font-size:13px">
+            Loading context&hellip;
+          </div>
+        </div>
+
+        <button type="button" id="fbPreviewToggle" onclick="fbTogglePreview()"
+          style="margin-top:10px;background:none;border:none;color:#7c8cf8;
+            font-size:12.5px;cursor:pointer;padding:0;text-decoration:underline">
+          Preview payload
+        </button>
+        <pre id="fbPreview" hidden style="
+          background:#0f1117;border:1px solid #252934;border-radius:6px;
+          padding:10px 12px;font-size:11.5px;color:#cdd6f4;
+          overflow-x:auto;white-space:pre-wrap;margin-top:8px;
+        "></pre>
+      </div>
+
+      <div style="margin-top:14px;font-size:11.5px;color:#6b7587;line-height:1.5">
+        A random install ID is attached server-side so we can recognize repeated
+        feedback from this deployment. It isn&rsquo;t linked to you, your users, or
+        your network data.
+      </div>
+
+      <div id="fbEndpointNote" style="margin-top:10px;font-size:11.5px;color:#6b7587;display:none"></div>
+      <div id="fbError" style="margin-top:10px;font-size:13px;color:#f5555d"></div>
+    </div>
+
+    {# Success view #}
+    <div id="fbSuccess" hidden style="text-align:center;padding:24px 0">
+      <div style="font-size:32px;margin-bottom:12px">&#10003;</div>
+      <p id="fbSuccessMsg" style="margin:0 0 18px;font-size:15px;font-weight:600">Feedback sent &mdash; thank you!</p>
+      <button onclick="closeFeedbackModal()" style="
+        background:#252934;border:1px solid #374151;border-radius:6px;
+        color:#cdd6f4;cursor:pointer;font-size:13.5px;padding:8px 20px;
+      ">Close</button>
+    </div>
+
+  </div>
+
+  {# Footer buttons (shown only on form view) #}
+  <div id="fbFooter" style="
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:14px 22px 18px;border-top:1px solid #252934;
+  ">
+    <button type="button" id="fbDeleteBtn" onclick="fbRequestDeletion()" style="
+      background:none;border:none;color:#6b7587;cursor:pointer;
+      font-size:12px;padding:0;text-decoration:underline;
+    ">Request deletion of my data</button>
+    <div style="display:flex;gap:10px">
+      <button type="button" onclick="closeFeedbackModal()" style="
+        background:#252934;border:1px solid #374151;border-radius:6px;
+        color:#cdd6f4;cursor:pointer;font-size:13.5px;padding:8px 18px;
+      ">Cancel</button>
+      <button type="button" id="fbSubmitBtn" onclick="fbSubmit()" style="
+        background:#7c8cf8;border:none;border-radius:6px;
+        color:#fff;cursor:pointer;font-size:13.5px;font-weight:600;padding:8px 20px;
+      ">Send</button>
+    </div>
+  </div>
+</dialog>
+
+<style>
+  #feedbackModal::backdrop { background:rgba(0,0,0,.55); }
+  .fb-ctx-row {
+    display:flex;align-items:center;justify-content:space-between;
+    padding:7px 14px;font-size:13px;border-bottom:1px solid #252934;
+  }
+  .fb-ctx-row:last-child { border-bottom:none; }
+  .fb-ctx-label { color:#6b7587;min-width:140px;flex-shrink:0; }
+  .fb-ctx-value { color:#cdd6f4;flex:1;text-align:right;margin-right:10px;font-size:12.5px; }
+  .fb-ctx-rm {
+    background:none;border:none;color:#6b7587;cursor:pointer;
+    font-size:15px;line-height:1;padding:0 4px;border-radius:3px;
+  }
+  .fb-ctx-rm:hover { color:#f5555d; }
+</style>
+
+<script>
+(function() {
+  var _ctx = null;
+  var _removed = {};
+
+  window.openFeedbackModal = function() {
+    var modal = document.getElementById('feedbackModal');
+    // Reset state on each open
+    document.getElementById('fbText').value = '';
+    document.getElementById('fbError').textContent = '';
+    document.getElementById('fbPreview').hidden = true;
+    document.getElementById('fbPreviewToggle').textContent = 'Preview payload';
+    document.getElementById('fbForm').hidden = false;
+    document.getElementById('fbSuccess').hidden = true;
+    document.getElementById('fbFooter').hidden = false;
+    document.getElementById('fbSubmitBtn').disabled = false;
+    document.getElementById('fbSubmitBtn').textContent = 'Send';
+    document.getElementById('fbDeleteBtn').disabled = false;
+    _removed = {};
+    modal.showModal();
+    _loadContext();
+  };
+
+  window.closeFeedbackModal = function() {
+    document.getElementById('feedbackModal').close();
+  };
+
+  function _loadContext() {
+    if (_ctx) { _renderCtx(); return; }
+    fetch('/api/feedback-context')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { _ctx = d; _renderCtx(); })
+      .catch(function() {
+        document.getElementById('fbCtxLoading').textContent =
+          'Could not load context.';
+      });
+  }
+
+  function _ctxItems() {
+    if (!_ctx) return [];
+    var items = [];
+    if (_ctx.model)
+      items.push({key:'model', label:'Model', value:_ctx.model});
+    if (_ctx.hardware) {
+      var h = _ctx.hardware;
+      var hv = (h.ram_gb || '?') + ' GB RAM, ' + (h.cpu_cores || '?') + ' cores';
+      if (h.gpu_present) hv += ', GPU';
+      items.push({key:'hardware', label:'Hardware', value:hv});
+    }
+    if (_ctx.enrichment_sources && _ctx.enrichment_sources.length)
+      items.push({key:'enrichment', label:'Enrichment', value:_ctx.enrichment_sources.join(', ')});
+    if (_ctx.days_since_install !== null && _ctx.days_since_install !== undefined)
+      items.push({key:'days', label:'Days running', value:_ctx.days_since_install});
+    if (_ctx.metrics) {
+      var m = _ctx.metrics;
+      items.push({key:'alerts', label:'Alerts processed', value:m.alerts_processed_total});
+      if (m.agreement_rate !== null && m.agreement_rate !== undefined)
+        items.push({key:'agree', label:'Agreement rate', value:Math.round(m.agreement_rate*100)+'%'});
+      if (m.latency_p95_ms)
+        items.push({key:'latency', label:'Latency p95', value:Math.round(m.latency_p95_ms/1000)+'s'});
+    }
+    return items;
+  }
+
+  function _renderCtx() {
+    var list = document.getElementById('fbCtxList');
+    var loading = document.getElementById('fbCtxLoading');
+    if (loading) loading.style.display = 'none';
+    list.innerHTML = '';
+    var items = _ctxItems().filter(function(i) { return !_removed[i.key]; });
+    if (!items.length) {
+      list.innerHTML = '<div style="padding:10px 14px;color:#6b7587;font-size:13px">No context items selected.</div>';
+      return;
+    }
+    items.forEach(function(item) {
+      var row = document.createElement('div');
+      row.className = 'fb-ctx-row';
+      row.innerHTML = '<span class="fb-ctx-label">' + item.label + '</span>' +
+        '<span class="fb-ctx-value">' + item.value + '</span>' +
+        '<button class="fb-ctx-rm" title="Remove" onclick="fbRemoveCtx(\'' + item.key + '\')">×</button>';
+      list.appendChild(row);
+    });
+    _updatePreviewIfOpen();
+
+    // Show endpoint note if not configured
+    var epNote = document.getElementById('fbEndpointNote');
+    if (_ctx && _ctx.endpoint_note) {
+      epNote.textContent = _ctx.endpoint_note;
+      epNote.style.display = 'block';
+    }
+  }
+
+  window.fbRemoveCtx = function(key) {
+    _removed[key] = true;
+    _renderCtx();
+  };
+
+  var DELETION_TEXT = 'Data deletion requested for this installation.';
+
+  function _buildPayload(submissionType) {
+    var type = submissionType || 'feedback';
+    // A deletion request is a bare ask — pre-filled text, no context bundle.
+    if (type === 'deletion_request') {
+      return { submission_type: type, feedback_text: DELETION_TEXT };
+    }
+
+    var payload = {
+      submission_type: type,
+      feedback_text: document.getElementById('fbText').value.trim()
+    };
+    if (!_ctx) return payload;
+
+    var ctx = {};
+    if (!_removed.model && _ctx.model) ctx.model = _ctx.model;
+    if (!_removed.hardware && _ctx.hardware) ctx.hardware = _ctx.hardware;
+    if (!_removed.enrichment && _ctx.enrichment_sources) ctx.enrichment_sources = _ctx.enrichment_sources;
+    if (!_removed.days && _ctx.days_since_install !== undefined) ctx.days_since_install = _ctx.days_since_install;
+    if (Object.keys(ctx).length) payload.context = ctx;
+
+    if (_ctx.metrics) {
+      var metrics = {};
+      var m = _ctx.metrics;
+      if (!_removed.alerts) metrics.alerts_processed_total = m.alerts_processed_total;
+      if (!_removed.agree && m.agreement_rate !== null && m.agreement_rate !== undefined)
+        metrics.agreement_rate = m.agreement_rate;
+      if (!_removed.latency && m.latency_p95_ms) metrics.latency_p95_ms = m.latency_p95_ms;
+      // Always include verdict distribution if alerts are included
+      if (!_removed.alerts) {
+        metrics.verdicts_likely_fp = m.verdicts_likely_fp;
+        metrics.verdicts_suspicious = m.verdicts_suspicious;
+        metrics.verdicts_likely_tp = m.verdicts_likely_tp;
+      }
+      if (Object.keys(metrics).length) payload.metrics = metrics;
+    }
+
+    return payload;
+  }
+
+  function _updatePreviewIfOpen() {
+    var pre = document.getElementById('fbPreview');
+    if (!pre.hidden) pre.textContent = JSON.stringify(_buildPayload(), null, 2);
+  }
+
+  window.fbTogglePreview = function() {
+    var pre = document.getElementById('fbPreview');
+    var btn = document.getElementById('fbPreviewToggle');
+    if (pre.hidden) {
+      pre.textContent = JSON.stringify(_buildPayload(), null, 2);
+      pre.hidden = false;
+      btn.textContent = 'Hide payload';
+    } else {
+      pre.hidden = true;
+      btn.textContent = 'Preview payload';
+    }
+  };
+
+  function _doSubmit(submissionType) {
+    var isDeletion = submissionType === 'deletion_request';
+    var sendBtn = document.getElementById('fbSubmitBtn');
+    var delBtn = document.getElementById('fbDeleteBtn');
+
+    if (!isDeletion) {
+      var text = document.getElementById('fbText').value.trim();
+      if (!text) {
+        document.getElementById('fbError').textContent = 'Please enter your feedback before sending.';
+        return;
+      }
+      sendBtn.textContent = 'Sending…';
+    }
+    sendBtn.disabled = true;
+    delBtn.disabled = true;
+    document.getElementById('fbError').textContent = '';
+
+    var payload = _buildPayload(submissionType);
+    fetch('/api/feedback', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      if (res.ok) {
+        document.getElementById('fbSuccessMsg').textContent =
+          isDeletion ? 'Deletion request received' : 'Feedback sent — thank you!';
+        document.getElementById('fbForm').hidden = true;
+        document.getElementById('fbFooter').hidden = true;
+        document.getElementById('fbSuccess').hidden = false;
+      } else {
+        var msg = (res.data && res.data.detail) ? res.data.detail : 'Server error — please try again.';
+        document.getElementById('fbError').textContent = msg;
+        sendBtn.disabled = false;
+        delBtn.disabled = false;
+        sendBtn.textContent = 'Send';
+      }
+    })
+    .catch(function() {
+      document.getElementById('fbError').textContent = 'Could not reach the server — check your connection.';
+      sendBtn.disabled = false;
+      delBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+    });
+  }
+
+  window.fbSubmit = function() { _doSubmit('feedback'); };
+
+  window.fbRequestDeletion = function() {
+    var ok = window.confirm(
+      'Request deletion of the data Verdix holds for this installation? ' +
+      'This is processed manually by the Verdix team.'
+    );
+    if (ok) _doSubmit('deletion_request');
+  };
+})();
+</script>
