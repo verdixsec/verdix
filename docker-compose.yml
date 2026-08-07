@@ -14,7 +14,11 @@
 services:
 
   app:
-    image: ghcr.io/verdixsec/verdix/app:latest
+    # Pinned to the v0.1.1 release build — the shipped compose file never
+    # tracks :latest, so an install today and an install next month pull the
+    # same bytes. CI moves :latest on every successful build; use that for
+    # local dev only, never here.
+    image: ghcr.io/verdixsec/verdix/app:0.1.1
     restart: unless-stopped
     depends_on:
       llm:
@@ -76,18 +80,35 @@ services:
       - internal
 
   llm:
-    # Fat image — gemma4:e4b-it-q8_0 is baked in. No model download on first run.
-    image: ghcr.io/verdixsec/verdix/llm:latest
+    # Lean image — Ollama runtime only. On first run the entrypoint pulls
+    # gemma4:e4b-it-q8_0 from ghcr.io/verdixsec/verdix/gemma4:e4b-it-q8_0
+    # (OCI artifact, ~7 GB) and imports it into the verdix_models volume.
+    # Subsequent starts load from the volume in seconds — no network fetch.
+    # For air-gapped installs see Dockerfile.fat + docker-compose.fat.yml.
+    #
+    # Pinned to the v0.1.1 release build (same reasoning as the app image
+    # above). This also fixes a real gap: :latest previously pointed at an
+    # image built 2026-06-18, two days before the lean re-architecture even
+    # started, and as of this pin that tag no longer resolves at all (the
+    # version behind it was removed from ghcr). The image validated in the
+    # 2026-06-21 field test lives under a different tag entirely (lean-rc1).
+    # Never let this drift back to a floating tag.
+    image: ghcr.io/verdixsec/verdix/llm:0.1.1
     restart: unless-stopped
     volumes:
       - verdix_models:/root/.ollama
     healthcheck:
-      # Passes once the Ollama server is running and the model is listed.
-      test: ["CMD", "ollama", "list"]
+      # Greps for the specific model tag, not just "is ollama serve up" —
+      # `ollama list` returns exit 0 with zero models loaded, which would
+      # otherwise report Healthy while the first-run GGUF pull/import is
+      # still in progress. start_period is generous to cover first-run oras
+      # pull + ollama create (can take 20-40 min on slow links). Steady-state
+      # restarts are healthy within ~30 s (model already in volume).
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q 'gemma4:e4b-it-q8_0'"]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 60s
+      start_period: 2400s
     # No ports exposed — the app container reaches Ollama via the internal network.
     # Uncomment to expose Ollama for debugging or the eval harness:
     # ports:
@@ -109,8 +130,9 @@ volumes:
     # All persistent state: SQLite database, GeoIP files, enrichment cache.
     # Survives container restarts and image updates.
   verdix_models:
-    # Ollama model weights — populated from the fat image on first run,
-    # then persisted here so container restarts load instantly from disk.
+    # Ollama model weights — populated by the lean image entrypoint on first run
+    # (oras pull from ghcr + ollama create), then persisted here so subsequent
+    # starts skip the fetch entirely and load the model from disk in seconds.
 
 networks:
   internal:
