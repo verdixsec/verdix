@@ -1,6 +1,6 @@
 # Verdix — Deployment Guide
 
-> **Last updated:** 2026-05-21
+> **Last updated:** 2026-08-09
 
 Verdix needs direct access to Suricata's `eve.json`. The topology you need is determined by one question: **where is Suricata running relative to this host?** Same machine, separate Linux host, or Windows host/NAS. Pick the matching section below.
 
@@ -12,10 +12,20 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 
 - A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, or equivalent
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
-- Suricata already running and producing `eve.json`, either on this host or a networked sensor
+- Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server
 - **32 GB RAM minimum**: the LLM runs in-process and needs memory headroom
-- **40 GB free disk space** in Docker's storage area: the LLM image alone is ~13 GB
-- **16 cores recommended, 8 minimum**: no GPU required; if one is present, Ollama uses it automatically and verdict latency drops from ~2 min to ~30 sec
+- **30 GB free disk space minimum, 40 GB recommended**, split across two locations that land on different filesystems if you relocate Docker storage:
+  - **Images** (Docker's image/layer store, `/var/lib/containerd` when the containerd image store is in use): ~11 GB actual. The LLM runtime image bundles Ollama's CUDA/ROCm runtime and is ~10.6 GB of that on its own; the app image is ~0.4 GB. Budget **15 GB minimum, 20 GB recommended** here.
+  - **Volumes** (Docker's data-root): ~12 GB actual. The `verdix_models` volume holds the ~11 GB Gemma model; `verdix_data` (database, GeoIP files, enrichment cache) is small but grows over time. Budget **15 GB minimum, 20 GB recommended** here.
+
+  On a default install (nothing relocated, everything on one disk), that's the combined 30/40 GB above. If you relocate Docker storage, check each location separately; see the note below.
+
+  The app's own health check (Setup screen and `/api/health`) only monitors the volumes location (15 GB min / 20 GB recommended), since it runs inside the app container, which has no visibility into Docker's image store. A green health check does not by itself confirm the images location has enough room; check that side manually before you install if you're unsure.
+- **16 cores is the reference configuration; no GPU required.** A verdict takes about two minutes on CPU, supporting 300–500 verdicts per day: enough for a tuned Suricata deployment.
+
+  Fewer than 16 cores will still run, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
+
+  A GPU with 12 GB VRAM or more drops verdict time to about 30 seconds; Ollama uses it automatically.
 
 **You don't need:**
 
@@ -23,7 +33,7 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 - Any changes to your Suricata config, SIEM, or production network
 - An internet connection for core functionality (VirusTotal is optional)
 
-> **Disk space:** if Docker's data directory is on a small root partition, move it before pulling images. See [Moving Docker storage](#moving-docker-storage).
+> **Disk space:** if Docker's data directory is on a small root partition, move it before pulling images. See [Moving Docker storage to a larger disk](#moving-docker-storage-to-a-larger-disk) (including the containerd caveat if `docker info` reports `overlayfs` as the storage driver).
 
 ---
 
@@ -32,8 +42,8 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 | Your setup | Go to |
 |---|---|
 | Suricata and Verdix on the **same host** | [Topology 1](#topology-1-same-host) |
-| Suricata on a **separate Linux host** | [Topology 2 — NFS](#topology-2-separated-nfs) |
-| Suricata on a **Windows host or NAS** | [Topology 3 — SMB/CIFS](#topology-3-separated-smb-cifs) |
+| Suricata on a **separate Linux host** | [Topology 2 — NFS](#topology-2-separated--nfs) |
+| Suricata on a **Windows host or NAS** | [Topology 3 — SMB/CIFS](#topology-3-separated--smbcifs) |
 
 ---
 
@@ -65,18 +75,16 @@ docker run hello-world
 
 Suricata and Verdix run on the same machine.
 
-```
-┌──────────────────────────────────────────────────┐
-│  Host (32 GB RAM, 16 cores)                      │
-│                                                  │
-│  Suricata ──► /var/log/suricata/eve.json         │
-│                        │                         │
-│        ┌───────────────▼─────────────────────┐   │
-│        │  docker compose up                  │   │
-│        │  Verdix  (port 8080)       │   │
-│        │  Ollama           (internal only)   │   │
-│        └─────────────────────────────────────┘   │
-└──────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph host["Host (32 GB RAM, 16 cores)"]
+        suricata["Suricata"] --> eve["/var/log/suricata/eve.json"]
+        eve --> compose
+        subgraph compose["docker compose up"]
+            verdix["Verdix (port 8080)"]
+            ollama["Ollama (internal only)"]
+        end
+    end
 ```
 
 ### Step 1 — Download and configure
@@ -101,9 +109,11 @@ VX_SURICATA_LOG_DIR=/var/log/suricata
 VX_SURICATA_CONFIG_DIR=/etc/suricata
 
 # Optional — free key at virustotal.com/gui/my-apikey
-# Strongly recommended: VT enrichment meaningfully improves verdict accuracy
+# Reputation lookup for IPs, domains, and hashes; decisive on many DNS-only alerts
 VX_VIRUSTOTAL_API_KEY=
 ```
+
+**Also recommended:** add a free VirusTotal API key. Verdix queries VirusTotal for the reputation of IPs, domains, and hashes in the alert. DNS-only and ambiguous-domain alerts carry little evidence of their own, so external reputation is often what decides them. Without a key, those alerts still get a verdict, and the enrichment-source ledger shows VirusTotal as not configured.
 
 Common path variants by Suricata installation method:
 
@@ -123,7 +133,7 @@ Common path variants by Suricata installation method:
 docker compose up -d
 ```
 
-The first run pulls the app image (~2 GB) and the LLM image with the Gemma model baked in (~13 GB). This takes 10–20 minutes depending on your connection speed. Every subsequent start is instant.
+The first run pulls ~22 GB total: the app image (~0.4 GB) and the LLM runtime image (~10.6 GB, which bundles Ollama's CUDA/ROCm runtime), then the LLM container pulls the Gemma model (~11 GB) straight into the `verdix_models` volume. This takes 10–20 minutes depending on your connection speed. Every subsequent start is instant because the model stays in the volume.
 
 Watch the startup:
 ```bash
@@ -158,28 +168,33 @@ This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert
 
 ## Topology 2: Separated — NFS
 
-Suricata runs on a dedicated **sensor**. Verdix runs on a separate **analysis host**. The sensor's log and config directories are exported read-only via NFS and mounted on the analysis host.
+Suricata runs on a dedicated **Suricata Server**. Verdix runs on a separate **Verdix Application Host**. The Suricata Server's log and config directories are exported read-only via NFS and mounted on the Verdix Application Host.
 
+```mermaid
+flowchart LR
+    subgraph suricatasvr["Suricata Server"]
+        s_suricata["Suricata"]
+        s_logs["/var/log/suricata/"]
+        s_config["/etc/suricata/"]
+    end
+    subgraph apphost["Verdix Application Host (32 GB RAM, 16 cores)"]
+        m_logs["/mnt/suricata_logs/"]
+        m_config["/mnt/suricata_config/"]
+        subgraph compose["docker compose up"]
+            verdix["Verdix (port 8080)"]
+            ollama["Ollama (internal only)"]
+        end
+        m_logs --> compose
+        m_config --> compose
+    end
+    suricatasvr -->|"NFS (ro)"| apphost
 ```
-┌──────────────────────┐    NFS (ro)    ┌──────────────────────────────────────────────┐
-│  Sensor              │ ─────────────► │  Analysis host (32 GB RAM, 16 cores)         │
-│  (Suricata)          │                │                                              │
-│  /var/log/suricata/  │                │  /mnt/suricata_logs/                         │
-│  /etc/suricata/      │                │  /mnt/suricata_config/                       │
-└──────────────────────┘                │                                              │
-                                        │  docker compose up                           │
-                                        │  Verdix  (port 8080)                │
-                                        │  Ollama           (internal only)            │
-                                        └──────────────────────────────────────────────┘
-```
 
-**What this asks of the sensor:** two read-only export lines in `/etc/exports`. The exports are strictly read-only; Verdix cannot write to the sensor. They can be revoked in seconds.
-
-> **About `docker-compose.override.yml`:** Docker Compose automatically merges a file named `docker-compose.override.yml` with `docker-compose.yml` on every `docker compose` command; no extra flags needed. In this topology you'll create one to store the NFS mount paths and a file-permission setting specific to this machine. It is gitignored, so updates to Verdix never overwrite it.
+**What this asks of the Suricata Server:** two read-only export lines in `/etc/exports`. The exports are strictly read-only; Verdix cannot write to the Suricata Server. They can be revoked in seconds.
 
 ---
 
-### Step A — On the sensor: export via NFS
+### Step A — On the Suricata Server: export via NFS
 
 #### A1 — Install and start the NFS server
 
@@ -204,11 +219,11 @@ sudo systemctl enable --now nfsserver
 
 #### A2 — Add the export entries
 
-Replace `ANALYSIS_HOST_IP` with the IP address of your analysis host:
+Replace `APP_HOST_IP` with the IP address of your Verdix Application Host:
 
 ```bash
-echo '/var/log/suricata  ANALYSIS_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
-echo '/etc/suricata      ANALYSIS_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/var/log/suricata  APP_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/etc/suricata      APP_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
 sudo exportfs -ra
 ```
 
@@ -220,25 +235,25 @@ If your Suricata logs or config live in non-standard paths, adjust the left side
 
 **Ubuntu / Debian (ufw):**
 ```bash
-sudo ufw allow from ANALYSIS_HOST_IP to any port 2049
-sudo ufw allow from ANALYSIS_HOST_IP to any port 111
+sudo ufw allow from APP_HOST_IP to any port 2049
+sudo ufw allow from APP_HOST_IP to any port 111
 sudo ufw reload
 ```
 
 **RHEL / Oracle Linux (firewalld):**
 ```bash
-sudo firewall-cmd --permanent --add-service=nfs --source=ANALYSIS_HOST_IP
-sudo firewall-cmd --permanent --add-service=rpc-bind --source=ANALYSIS_HOST_IP
+sudo firewall-cmd --permanent --add-service=nfs --source=APP_HOST_IP
+sudo firewall-cmd --permanent --add-service=rpc-bind --source=APP_HOST_IP
 sudo firewall-cmd --reload
 ```
 
 **No firewall or internal-only network:** skip this step.
 
-> **Checkpoint:** from the analysis host: `nc -zv SENSOR_IP 2049` prints `succeeded`.
+> **Checkpoint:** from the Verdix Application Host: `nc -zv SURICATA_SERVER_IP 2049` prints `succeeded`.
 
 ---
 
-### Step B — On the analysis host: mount, configure, and start
+### Step B — On the Verdix Application Host: mount, configure, and start
 
 #### B1 — Install the NFS client
 
@@ -254,13 +269,13 @@ sudo dnf install -y nfs-utils && sudo systemctl enable --now rpcbind
 
 #### B2 — Mount and verify
 
-Replace `SENSOR_IP` with the sensor's IP address:
+Replace `SURICATA_SERVER_IP` with the Suricata Server's IP address:
 
 ```bash
 sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 
-sudo mount -t nfs SENSOR_IP:/var/log/suricata /mnt/suricata_logs
-sudo mount -t nfs SENSOR_IP:/etc/suricata     /mnt/suricata_config
+sudo mount -t nfs SURICATA_SERVER_IP:/var/log/suricata /mnt/suricata_logs
+sudo mount -t nfs SURICATA_SERVER_IP:/etc/suricata     /mnt/suricata_config
 
 ls /mnt/suricata_logs/eve.json         # should succeed
 ls /mnt/suricata_config/suricata.yaml  # should succeed
@@ -273,8 +288,8 @@ ls /mnt/suricata_config/suricata.yaml  # should succeed
 #### B3 — Make mounts survive reboots
 
 ```bash
-echo 'SENSOR_IP:/var/log/suricata  /mnt/suricata_logs    nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
-echo 'SENSOR_IP:/etc/suricata      /mnt/suricata_config  nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
+echo 'SURICATA_SERVER_IP:/var/log/suricata  /mnt/suricata_logs    nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
+echo 'SURICATA_SERVER_IP:/etc/suricata      /mnt/suricata_config  nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
 
 # Test without rebooting
 sudo umount /mnt/suricata_logs /mnt/suricata_config
@@ -282,7 +297,7 @@ sudo mount /mnt/suricata_logs && sudo mount /mnt/suricata_config
 ls /mnt/suricata_logs/eve.json && echo "OK"
 ```
 
-> The `_netdev` option tells the OS to wait for the network before mounting at boot. Without it, a reboot while the sensor is unreachable can hang the boot sequence.
+> The `_netdev` option tells the OS to wait for the network before mounting at boot. Without it, a reboot while the Suricata Server is unreachable can hang the boot sequence.
 
 #### B4 — Download and configure
 
@@ -302,35 +317,24 @@ VX_SURICATA_CONFIG_DIR=/mnt/suricata_config
 VX_VIRUSTOTAL_API_KEY=    # optional but recommended
 ```
 
-#### B5 — Fix container file permissions
-
-Verdix runs inside the container as a non-root user. Suricata's `eve.json` is group-owned by Suricata's process group. The container needs to be added to that group. The group ID varies by distro and Suricata install method, so detect it automatically:
-
-```bash
-SURICATA_GID=$(stat -c "%g" /mnt/suricata_logs/eve.json)
-echo "Detected GID: $SURICATA_GID"
-
-cat > docker-compose.override.yml << EOF
-# Machine-specific overrides — not committed to git.
-# Docker Compose merges this automatically with docker-compose.yml.
-services:
-  app:
-    group_add:
-      - "${SURICATA_GID}"
-    volumes:
-      - /mnt/suricata_logs:/host/suricata/logs:ro
-      - /mnt/suricata_config:/host/suricata/config:ro
-EOF
-```
-
-#### B6 — Start
+#### B5 — Start
 
 ```bash
 docker compose up -d
 docker compose logs -f app
 ```
 
-> **Checkpoint:** `eve_tailer_started` appears in the logs. Open `http://localhost:8080` on this host, or `http://ANALYSIS_HOST_IP:8080` from your analyst workstation.
+> **Checkpoint:** `eve_tailer_started` appears in the logs within 30 seconds of the containers coming up.
+
+**If eve.json is not being read:** the app container's entrypoint automatically detects `eve.json`'s owning group and joins it before starting, so no manual `stat -c "%g"` or `group_add` override is needed. Every mount logs which path the entrypoint took (already readable, joined an existing group, created a new one, or failed). Check it with:
+```bash
+docker compose logs app
+```
+If the mount genuinely can't be read (SELinux context, POSIX ACLs beyond the owning group), the container exits at startup with a specific error naming the path, the GID, and the likely cause.
+
+#### B6 — Open the UI
+
+Open `http://localhost:8080` on this host, or `http://APP_HOST_IP:8080` from your analyst workstation (replace `APP_HOST_IP` with the Verdix Application Host's IP address).
 
 > **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations:
 > ```bash
@@ -338,32 +342,42 @@ docker compose logs -f app
 > sudo firewall-cmd --permanent --add-port=8080/tcp && sudo firewall-cmd --reload  # firewalld
 > ```
 
-**If eve.json is not being read:**
+Accept the EULA, then log in with the admin password you set in `.env`.
+
+**Trigger a test alert** to confirm the pipeline is working end-to-end. Run this on the Suricata Server:
+
 ```bash
-docker compose exec app tail -1 /host/suricata/logs/eve.json
+curl http://testmynids.org/uid/index.html
 ```
-If this returns "Permission denied", the group ID in Step B5 is wrong. Re-run `stat -c "%g" /mnt/suricata_logs/eve.json`, update `docker-compose.override.yml`, then `docker compose down && docker compose up -d`.
+
+This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in ~2 minutes on a 16-core host.
 
 ---
 
 ## Topology 3: Separated — SMB/CIFS
 
-Use this when the sensor is a Windows host or a NAS exporting via Samba.
+Use this when the Suricata Server is a Windows host or a NAS exporting via Samba.
 
-```
-┌────────────────────────────┐  SMB/CIFS (ro)   ┌──────────────────────────────────────────────┐
-│  Sensor                    │ ───────────────► │  Analysis host (32 GB RAM, 16 cores)         │
-│  (Windows / NAS)           │                  │                                              │
-│  \\sensor\suricata-logs    │                  │  /mnt/suricata_logs/                         │
-│  \\sensor\suricata-config  │                  │  /mnt/suricata_config/                       │
-└────────────────────────────┘                  │                                              │
-                                                │  docker compose up                           │
-                                                │  Verdix  (port 8080)                │
-                                                │  Ollama           (internal only)            │
-                                                └──────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph suricatasvr["Suricata Server (Windows / NAS)"]
+        w_logs["\\\\SURICATA_SERVER_IP\\suricata-logs"]
+        w_config["\\\\SURICATA_SERVER_IP\\suricata-config"]
+    end
+    subgraph apphost["Verdix Application Host (32 GB RAM, 16 cores)"]
+        m_logs["/mnt/suricata_logs/"]
+        m_config["/mnt/suricata_config/"]
+        subgraph compose["docker compose up"]
+            verdix["Verdix (port 8080)"]
+            ollama["Ollama (internal only)"]
+        end
+        m_logs --> compose
+        m_config --> compose
+    end
+    suricatasvr -->|"SMB/CIFS (ro)"| apphost
 ```
 
-Replace `SENSOR_IP` with the sensor's IP address or hostname.
+Replace `SURICATA_SERVER_IP` with the Suricata Server's IP address or hostname.
 
 ```bash
 sudo apt-get install -y cifs-utils    # Ubuntu/Debian
@@ -371,9 +385,9 @@ sudo apt-get install -y cifs-utils    # Ubuntu/Debian
 
 sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 
-sudo mount -t cifs //SENSOR_IP/suricata-logs   /mnt/suricata_logs   \
+sudo mount -t cifs //SURICATA_SERVER_IP/suricata-logs   /mnt/suricata_logs   \
   -o ro,username=guest,password=,uid=$(id -u),gid=$(id -g)
-sudo mount -t cifs //SENSOR_IP/suricata-config /mnt/suricata_config \
+sudo mount -t cifs //SURICATA_SERVER_IP/suricata-config /mnt/suricata_config \
   -o ro,username=guest,password=,uid=$(id -u),gid=$(id -g)
 ```
 
@@ -385,7 +399,7 @@ Once the mounts are working, follow [Steps B4–B6](#b4--download-and-configure)
 
 ## Testing with sample traffic
 
-To confirm the pipeline is working, run this on the sensor:
+To confirm the pipeline is working, run this on the Suricata Server:
 
 ```bash
 curl http://testmynids.org/uid/index.html
@@ -393,7 +407,7 @@ curl http://testmynids.org/uid/index.html
 
 This fires `ET ATTACK_RESPONSE Id Check Returned User Id` and produces an alert in `eve.json` within seconds.
 
-For richer testing with real malware signatures (VirusTotal hits, RDAP domain data, high-confidence TP verdicts), replay a labeled PCAP through Suricata on the sensor:
+For richer testing with real malware signatures (VirusTotal hits, RDAP domain data, high-confidence TP verdicts), replay a labeled PCAP through Suricata on the Suricata Server:
 
 ```bash
 sudo suricata -r /path/to/sample.pcap -l /var/log/suricata/ -k none
@@ -446,6 +460,14 @@ The host's firewall may be blocking port 8080. See the firewall note in your top
 **NFS mounts missing after reboot:**
 Ensure `/etc/fstab` entries include `_netdev`. Check `dmesg | grep nfs` for mount errors.
 
+**`docker compose exec app id` shows root:**
+That's expected and not a misconfiguration. The image no longer declares a fixed `USER`: the entrypoint starts as root to fix bind-mount permissions, then drops to `appuser` via `gosu`. `docker compose exec` opens its own session as the image's declared user (root), which is separate from the long-running app process. To see what the app itself runs as, check the process directly:
+```bash
+docker compose exec app cat /proc/1/status | grep -E '^(Name|Uid)'
+# Expect: Uid: 1000 1000 1000 1000 (appuser). PID 1 is the app process
+# itself, since the entrypoint execs into it rather than leaving a wrapper running.
+```
+
 ---
 
 ## Uninstalling
@@ -464,9 +486,11 @@ docker compose down -v
 
 ## Optional configuration
 
+> **About `docker-compose.override.yml`:** Docker Compose automatically merges a file named `docker-compose.override.yml` with `docker-compose.yml` on every `docker compose` command; no extra flags needed. You don't need one for a standard install: `VX_SURICATA_LOG_DIR` and `VX_SURICATA_CONFIG_DIR` in `.env` already cover the NFS/SMB mount paths in Topologies 2 and 3. Create one only for the host-specific customizations below (TLS-proxy CA bundle, custom GeoIP database paths, pinning a specific image tag for testing). A commented template covering these cases ships at [`docker-compose.override.yml.example`](../docker-compose.override.yml.example). Copy it to `docker-compose.override.yml` and uncomment what you need. It's gitignored, so updates to Verdix never overwrite it.
+
 ### Moving Docker storage to a larger disk
 
-If your root partition has less than 40 GB free, move Docker's storage before pulling images:
+If your root partition has less than 30 GB free (40 GB recommended), move Docker's storage before pulling images:
 
 ```bash
 # Stop Docker
@@ -486,6 +510,13 @@ sudo systemctl start docker
 # Verify
 docker info | grep "Docker Root Dir"   # should show /opt/docker
 ```
+
+> **containerd caveat:** if `docker info` shows `Storage Driver: overlayfs` with the containerd image store enabled, relocating `data-root` does **not** move image layers; they still land in `/var/lib/containerd` regardless of the `daemon.json` setting above. Check both locations separately:
+> ```bash
+> df -h $(docker info -f '{{.DockerRootDir}}')   # volumes (data-root): moved
+> du -sh /var/lib/containerd                     # images: did NOT move
+> ```
+> Move or bind-mount `/var/lib/containerd` too if it's on the same small root partition. This has filled a root partition to 99% even after following the steps above.
 
 ### TLS-inspecting proxy
 

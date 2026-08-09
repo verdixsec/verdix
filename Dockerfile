@@ -7,8 +7,11 @@
 FROM python:3.13-slim
 
 # libgomp1 is required by the geoip2 MMDB reader (OpenMP dependency).
+# gosu lets the entrypoint start as root (to fix bind-mount group
+# permissions), then drop to appuser without leaving a supervisor process
+# running as root — see entrypoint.sh.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user and persistent-state directory.
@@ -44,8 +47,18 @@ RUN cd /var/lib/verdix/geoip && \
 
 RUN chown -R appuser:appuser /var/lib/verdix
 
-USER appuser
+# Entrypoint fixes bind-mount group permissions (see entrypoint.sh), then
+# execs into appuser — no application code ever runs as root. The image
+# stays without a USER directive so the entrypoint can start as root; the
+# actual running process is always appuser (uid 1000) once ENTRYPOINT
+# execs, which is what `docker top` / `ps` inside the container will show.
+# Note: this means the image's *declared* USER is root, which trips
+# Kubernetes' `securityContext.runAsNonRoot: true` if this is ever deployed
+# there — not a concern for Docker Compose (v0.1's only packaging target).
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8080
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "src.main"]

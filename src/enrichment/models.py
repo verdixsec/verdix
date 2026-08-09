@@ -55,7 +55,7 @@ class EnrichmentResult:
     not a separate state. Three states is the right cognitive load for analysts.
     """
 
-    source: str                          # "virustotal", "rdap", "maxmind"
+    source: str                          # "virustotal", "rdap", "geoip"
     status: EnrichmentStatus
     data: dict | None                    # enrichment payload, only if CONTRIBUTED
     summary: str | None                  # one-line analyst-facing summary

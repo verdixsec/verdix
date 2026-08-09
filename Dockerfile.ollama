@@ -3,18 +3,18 @@
 # Verdix — Lean Ollama image (runtime only; model fetched from ghcr at first run)
 #
 # The model (gemma4:e4b-it-q8_0) is NOT baked in. On first run the entrypoint
-# pulls it as an OCI artifact from ghcr.io/verdixsec/verdix/gemma4:e4b-it-q8_0
-# and imports it into the verdix_models volume. Subsequent starts load from
-# the volume — no network fetch, no egress to ollama.com.
+# pulls it natively via `ollama pull` from ghcr.io/verdixsec/gemma4:e4b-it-q8_0
+# (an Ollama-native OCI manifest, published separately by maintainer tooling —
+# not part of this Dockerfile's build) and aliases it to the local tag the app
+# expects. Subsequent starts load from the verdix_models volume — no network
+# fetch, no egress to ollama.com.
 #
-# Build (repeat only when pinned Ollama or oras version bumps, or sha256 changes):
-#   docker build -f Dockerfile.ollama \
-#     --build-arg GEMMA4_GGUF_SHA256=<sha256-from-publish-model-sh> \
-#     -t ghcr.io/verdixsec/verdix/llm:latest .
+# Build (repeat only when the pinned Ollama version bumps):
+#   docker build -f Dockerfile.ollama -t ghcr.io/verdixsec/verdix/llm:latest .
 #   docker push ghcr.io/verdixsec/verdix/llm:latest
 #
-# To publish the model artifact to ghcr (run once per model update):
-#   bash scripts/publish-model.sh /path/to/gemma4-e4b-it-q8_0.gguf llm/Modelfile
+# Publishing the model artifact to ghcr is a maintainer-only step, run with
+# internal tooling — not part of this repo.
 #
 # For air-gapped installs see Dockerfile.fat + docker-compose.fat.yml.
 
@@ -24,8 +24,17 @@ FROM ollama/ollama:0.23.2
 # Verified against Ollama 0.23.2: startup log shows "Ollama cloud disabled: true".
 ENV OLLAMA_NO_CLOUD=1
 
-# Install oras (pinned) — used by the entrypoint to pull the model OCI artifact.
-# Only docker.io/library/ubuntu packages and github.com releases needed at build time.
+# DEAD CODE as of the native-`ollama pull` entrypoint:
+# oras and GEMMA4_GGUF_SHA256 were needed for the old oras-pull + sha256-verify +
+# `ollama create` import path, which entrypoint.sh no longer uses — `ollama pull`
+# does its own transport-level integrity checking. Left in place (not deleted) as
+# a rollback path back to the old entrypoint if the native-pull approach needs to
+# be reverted; the model-artifact publishing tooling no longer produces oras's
+# old generic artifact shape, so a revert would also need the prior publishing
+# tooling. Removal plan: keep through one full release cycle as the rollback
+# safety net, then delete both this block and the ARG/ENV below (tracked
+# internally alongside the deprecation of the old 4-segment ghcr coordinate on
+# the same timeline).
 ARG ORAS_VERSION=1.2.2
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -36,13 +45,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && oras version
 
-# sha256 of the raw GGUF file — entrypoint verifies after oras pull.
-# Obtain from: bash scripts/publish-model.sh (it prints the value before pushing).
-# Default matches the blob sha256 stored by Ollama for gemma4:e4b-it-q8_0 on 10.0.0.101.
 ARG GEMMA4_GGUF_SHA256=62d767a4c82f7acba2e1da74df317f01ce34b92830712c536260f82acfb63ac9
 ENV GEMMA4_GGUF_SHA256=${GEMMA4_GGUF_SHA256}
 
-COPY llm/Modelfile /opt/verdix/Modelfile
 COPY llm/entrypoint.sh /usr/local/bin/vx-entrypoint.sh
 RUN chmod +x /usr/local/bin/vx-entrypoint.sh
 

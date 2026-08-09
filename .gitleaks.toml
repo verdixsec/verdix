@@ -12,7 +12,7 @@ useDefault = true
 # with the app in example.env (it must equal the verdix.dev receiver's on-host
 # feedback_token). It is NOT a secret, NOT per-user, and NOT authentication, so
 # its presence in a tracked file is intentional. Allowlist the exact value only
-# — nothing else is relaxed. See docs/feedback-architecture-app.md for the model.
+# — nothing else is relaxed.
 [allowlist]
 description = "Public shared app-feedback token (ships in example.env by design; not a secret)"
 regexes = [

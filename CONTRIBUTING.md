@@ -18,6 +18,19 @@ pinned in `requirements.txt`; add them with `pip install ruff mypy`.
 To run the full stack (app plus the Gemma/Ollama container), follow
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Do not duplicate those steps here.
 
+### Building the app image locally
+
+`geoip/*.mmdb` is gitignored, so a clean clone cannot `docker build` the app image until
+you fetch the GeoIP databases once:
+
+```bash
+python scripts/fetch_geoip.py
+docker build -t verdix-app:local .
+```
+
+CI runs the same script in the `build-app` job, so there's no separate fetch logic to
+keep in sync.
+
 ## Before opening a PR
 
 Run these locally and make sure they pass:

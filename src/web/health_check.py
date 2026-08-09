@@ -156,27 +156,59 @@ async def _check_ollama() -> CheckItem:
 # Resource checks
 # ---------------------------------------------------------------------------
 
+_RAM_MINIMUM_GB = 16
+_RAM_RECOMMENDED_GB = 32
+_RAM_OK_GB = 30  # tolerance below _RAM_RECOMMENDED_GB — see comment below
+
+# Scoped to what this check can actually see: VX_DATA_PATH's filesystem,
+# i.e. wherever the verdix_data volume lands (below). It cannot observe
+# Docker's image/layer store (~11 GB measured — ollama base + lean llm
+# layer + app image) — the app container has no docker.sock, no docker
+# CLI, and no bind-mount into host paths like /var/lib/containerd, and
+# adding any of those for a disk-space warning would be a real security
+# regression (root-equivalent host access) for a cosmetic UI check. So
+# this threshold covers only the volumes location (verdix_models +
+# verdix_data, ~12 GB measured): 15 GB minimum / 20 GB recommended, for
+# pull/update headroom and DB/cache growth. A combined 30/40 GB figure
+# would test something this check can't observe — it would report "ok"
+# on a box where /var/lib/verdix's disk has plenty of room but the image
+# store's disk is nearly full, which is a real, seen-in-the-field failure
+# mode. The "Data volume free space" label (below) is deliberately narrow
+# to match; DEPLOYMENT.md's storage section covers the image-store side,
+# which this check cannot reach.
+_DISK_MINIMUM_GB = 15
+_DISK_RECOMMENDED_GB = 20
+
+
 def _check_resources() -> list[CheckItem]:
     items: list[CheckItem] = []
 
     # RAM
+    # _RAM_OK_GB sits below _RAM_RECOMMENDED_GB on purpose: OS-visible
+    # MemTotal always reads a few percent under nominal DIMM capacity
+    # (firmware/UEFI-reserved regions, ACPI tables, iGPU shared memory), so
+    # a correctly provisioned 32 GB box routinely reports ~30 GB. Comparing
+    # against the recommended figure with no tolerance false-warned on
+    # hardware that met spec.
     mem = psutil.virtual_memory()
     total_gb = mem.total / (1024 ** 3)
     avail_gb = mem.available / (1024 ** 3)
-    if total_gb >= 32:
+    if total_gb >= _RAM_OK_GB:
         items.append(CheckItem(
             "Memory", "ok",
             f"{total_gb:.0f} GB total · {avail_gb:.0f} GB available",
         ))
-    elif total_gb >= 16:
+    elif total_gb >= _RAM_MINIMUM_GB:
         items.append(CheckItem(
             "Memory", "warn",
-            f"{total_gb:.0f} GB total — 32 GB recommended for comfortable CPU inference",
+            f"{total_gb:.0f} GB total — {_RAM_RECOMMENDED_GB} GB recommended "
+            "for comfortable CPU inference",
         ))
     else:
         items.append(CheckItem(
             "Memory", "warn",
-            f"{total_gb:.0f} GB total — minimum 16 GB required; 32 GB recommended",
+            f"{total_gb:.0f} GB total — minimum {_RAM_MINIMUM_GB} GB required; "
+            f"{_RAM_RECOMMENDED_GB} GB recommended",
         ))
 
     # CPU
@@ -216,24 +248,31 @@ def _check_resources() -> list[CheckItem]:
         ))
 
     # Disk
+    # This measures free space on VX_DATA_PATH's filesystem only — the
+    # verdix_data volume (SQLite DB, GeoIP files, enrichment cache). It
+    # cannot see Docker's image/layer store or the verdix_models volume,
+    # which can live on a different filesystem entirely if Docker's
+    # data-root has been relocated (see DEPLOYMENT.md's "Moving Docker
+    # storage" section) — check those separately in that case.
     data_path = os.environ.get("VX_DATA_PATH", "/var/lib/verdix")
     try:
         disk = psutil.disk_usage(data_path if os.path.exists(data_path) else "/")
         free_gb = disk.free / (1024 ** 3)
-        if free_gb >= 25:
-            items.append(CheckItem("Disk", "ok", f"{free_gb:.0f} GB free"))
-        elif free_gb >= 10:
+        if free_gb >= _DISK_RECOMMENDED_GB:
+            items.append(CheckItem("Data volume free space", "ok", f"{free_gb:.0f} GB free"))
+        elif free_gb >= _DISK_MINIMUM_GB:
             items.append(CheckItem(
-                "Disk", "warn",
-                f"{free_gb:.0f} GB free — 25 GB recommended",
+                "Data volume free space", "warn",
+                f"{free_gb:.0f} GB free — {_DISK_RECOMMENDED_GB} GB recommended",
             ))
         else:
             items.append(CheckItem(
-                "Disk", "warn",
-                f"{free_gb:.0f} GB free — free up space or expand the Docker volume",
+                "Data volume free space", "warn",
+                f"{free_gb:.0f} GB free — minimum {_DISK_MINIMUM_GB} GB required; "
+                f"free up space or expand the Docker volume",
             ))
     except Exception:  # noqa: BLE001
-        items.append(CheckItem("Disk", "info", "Unable to read disk usage"))
+        items.append(CheckItem("Data volume free space", "info", "Unable to read disk usage"))
 
     return items
 

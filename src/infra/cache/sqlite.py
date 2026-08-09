@@ -10,8 +10,10 @@ cycles per operation.
 Each enrichment provider uses a distinct key prefix:
   vt:{indicator_type}:{value}      — VirusTotal
   rdap:{domain}                    — RDAP
-  maxmind:{ip}                     — MaxMind / DB-IP
   rdap:bootstrap                   — IANA RDAP bootstrap registry
+
+GeoIP does not use this cache at all — it's a local MMDB file read with
+no network call to rate-limit, so there's no "geoip:{ip}" key here.
 """
 from __future__ import annotations
 

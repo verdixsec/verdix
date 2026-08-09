@@ -28,7 +28,7 @@ def configure_logging(log_level: str = "INFO") -> None:
     Third-party stdlib logging (httpx, PyYAML, etc.) is also routed to stdout
     at the same level so all log output is a single uniform JSON stream.
 
-    Never log PII, payload content, or credentials — see CLAUDE.md.
+    Never log PII, payload content, or credentials.
     IP addresses and hostnames are acceptable; user data and tokens are not.
     """
     numeric_level = logging.getLevelName(log_level.upper())

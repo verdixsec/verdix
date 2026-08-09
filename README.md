@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.1.1](https://img.shields.io/badge/version-v0.1.1-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.1)
+[![Version: v0.1.2](https://img.shields.io/badge/version-v0.1.2-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.2)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -41,68 +41,23 @@ You accept the verdict or override it. Verdix never takes action on an alert aut
 
 | | |
 |---|---|
-| **Hardware** | 32 GB RAM · 16 CPU cores (8 minimum) · 40 GB free disk space |
+| **Hardware** | 32 GB RAM · 16 CPU cores · 30 GB free disk space minimum (40 GB recommended) |
 | **GPU** | Not required. If present, Ollama uses it automatically, reducing verdict time from ~2 min to ~30 sec |
 | **Software** | Docker 24+ with the `docker compose` plugin · Suricata running and producing `eve.json` |
 | **OS** | Any Linux distribution that supports Docker 24+ (Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, Fedora, openSUSE, and others) |
 | **Network** | Outbound HTTPS optional but strongly recommended for VirusTotal · GeoIP works fully offline |
 
-**macOS:** Docker Desktop on Apple Silicon works for evaluation. 32 GB unified memory is recommended so the model fits without swapping.
+**Fewer than 16 cores?** Verdix still runs, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
 
-**First run:** `docker compose up` downloads approximately 15 GB of Docker images: the application (~2 GB) and the LLM image with Gemma baked in (~13 GB). Allow 10–15 minutes depending on your connection speed. This happens once; images are cached locally after the first pull. On every start, allow 1–2 minutes after the containers come up for the model to load into memory before verdicts begin.
+Disk space splits across two locations: Docker's image store and the model volume. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for the breakdown and what to do if you relocate Docker storage.
 
 ---
 
-## Quick start
+## Install
 
-> **Suricata on a different machine?** Mount its log and config directories over NFS first, then follow these steps using your mount paths. See the [NFS Deployment Guide](docs/DEPLOYMENT.md#topology-2-separated-nfs).
+Verdix runs as two Docker containers alongside your existing Suricata. Install is `docker compose up` once `.env` points at your `eve.json` and `suricata.yaml` directories. First run pulls ~22 GB and takes 10–20 minutes.
 
-### Step 1 — Download
-
-```bash
-mkdir -p ~/verdix && cd ~/verdix
-
-curl -fsSL https://raw.githubusercontent.com/verdixsec/verdix/main/docker-compose.yml -o docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/verdixsec/verdix/main/example.env -o .env
-```
-
-### Step 2 — Configure
-
-Open `.env` in any text editor and set these three values:
-
-```bash
-VX_ADMIN_PASSWORD=your-strong-password   # password for the web UI
-VX_SURICATA_LOG_DIR=/var/log/suricata    # directory containing eve.json
-VX_SURICATA_CONFIG_DIR=/etc/suricata     # directory containing suricata.yaml
-```
-
-Common paths by Suricata installation method:
-
-| Installation | `VX_SURICATA_LOG_DIR` | `VX_SURICATA_CONFIG_DIR` |
-|---|---|---|
-| Package manager (apt, dnf, yum) | `/var/log/suricata` | `/etc/suricata` |
-| SELKS | `/var/log/suricata` | `/etc/suricata` |
-| Security Onion | `/nsm/suricata/logs` | `/etc/suricata` |
-| pfSense + Suricata | `/var/log/suricata` | `/usr/local/etc/suricata` |
-| Custom / manual build | wherever `eve-log.filename` points in your `suricata.yaml` | wherever your `suricata.yaml` lives |
-
-**Also recommended:** add a free VirusTotal API key. It improves verdict accuracy on borderline alerts where IP or domain reputation is the deciding signal.
-
-```bash
-VX_VIRUSTOTAL_API_KEY=your-vt-key   # free key at virustotal.com/gui/my-apikey
-```
-
-### Step 3 — Start
-
-```bash
-docker compose up -d
-```
-
-The first run pulls ~15 GB of Docker images. Allow 10–15 minutes. Watch progress with `docker compose logs -f`. Once the containers are up, allow 1–2 minutes for the model to load into memory. When you see `eve_tailer_started` in the app logs, Verdix is reading your `eve.json`.
-
-### Step 4 — Open the UI
-
-Navigate to `http://localhost:8080` in a browser on this host, or `http://HOST_IP:8080` from any machine on the same network (replace `HOST_IP` with this host's IP address). Accept the EULA, review the health check, and log in with the password you set.
+See the [Deployment Guide](docs/DEPLOYMENT.md) for same-host, NFS, and SMB topologies, Docker installation, and storage sizing. Full configuration reference: [`example.env`](example.env).
 
 ---
 
@@ -110,38 +65,16 @@ Navigate to `http://localhost:8080` in a browser on this host, or `http://HOST_I
 
 The queue shows alerts as they arrive from `eve.json`. Each alert is analyzed automatically. Expect about 2 minutes per alert on 16-core CPU-only hardware, or ~30 seconds if a GPU is present.
 
-**To generate test traffic right now:**
-
-If Suricata is monitoring a live network interface, run this on the Suricata host:
+To generate test traffic right now, run this on the Suricata host:
 ```bash
 curl http://testmynids.org/uid/index.html
 ```
-This fires the `ET ATTACK_RESPONSE Id Check Returned User Id` rule and produces an alert within seconds.
+This fires the `ET ATTACK_RESPONSE Id Check Returned User Id` rule and produces an alert within seconds. See [Testing with Sample Traffic](docs/DEPLOYMENT.md#testing-with-sample-traffic) for more realistic test traffic, including malware PCAPs.
 
-For more realistic alerts (including malware signatures with real VirusTotal and RDAP enrichment), replay a sample PCAP through Suricata on the Suricata host:
-```bash
-sudo suricata -r /path/to/sample.pcap -l /var/log/suricata/ -k none
-```
-Replayed alerts appear in the standard queue view immediately (the queue filters by when the alert arrived, not when the traffic occurred). See [Testing with Sample Traffic](docs/DEPLOYMENT.md#testing-with-sample-traffic) for recommended PCAP sources.
+If something doesn't work, see the [Deployment Guide — Troubleshooting](docs/DEPLOYMENT.md#troubleshooting) section.
 
 <!-- Screenshot: per-alert investigation view showing verdict, enrichment ledger, and evidence chain -->
 <!-- Add: docs/images/alert.png -->
-
----
-
-## Configuration reference
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `VX_ADMIN_PASSWORD` | yes | — | Password for the web UI |
-| `VX_SURICATA_LOG_DIR` | yes | `/var/log/suricata` | Host directory containing `eve.json` |
-| `VX_SURICATA_CONFIG_DIR` | yes | `/etc/suricata` | Host directory containing `suricata.yaml` |
-| `VX_VIRUSTOTAL_API_KEY` | no | — | Free VirusTotal API key. Improves verdict accuracy on borderline alerts |
-| `VX_DNS_SERVER` | no | OS resolver | Explicit DNS server for internal hostname resolution via PTR lookups |
-| `VX_TRIAGE_DAILY_CAP` | no | `300` | Maximum alerts auto-analyzed per day on this hardware |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | no | — | Standard proxy variables; all outbound HTTP calls respect these |
-
-Full reference with all options and defaults: [`example.env`](example.env)
 
 ---
 
@@ -184,41 +117,6 @@ Verdix v0.1 is Early Access. It does one thing well: triage individual Suricata 
 - Install wizard
 
 Feedback from early users shapes what gets built first. Use the feedback button in the top-right of the UI, or [open an issue](https://github.com/verdixsec/verdix/issues).
-
----
-
-## Troubleshooting
-
-**App container exits immediately**
-Check that `VX_ADMIN_PASSWORD` is set in `.env`, then `docker compose up -d` again.
-
-**Queue is empty after 10 minutes**
-Confirm the path is correct and the file exists inside the container:
-```bash
-docker compose exec app ls -la /host/suricata/logs/eve.json
-```
-
-**No verdicts appearing after alerts arrive**
-Check that the Ollama container is healthy and the model is loaded:
-```bash
-docker compose ps
-docker compose logs llm | tail -20
-```
-
-**"Permission denied" reading eve.json (NFS deployments)**
-The container user needs to be added to the file's group. See [Fix Container File Permissions](docs/DEPLOYMENT.md#b5--fix-container-file-permissions).
-
-**VirusTotal shows NOT_CONFIGURED**
-Confirm the key reached the container:
-```bash
-docker compose exec app printenv VX_VIRUSTOTAL_API_KEY
-```
-If empty, ensure `VX_VIRUSTOTAL_API_KEY` is set in `.env` (not just in the shell).
-
-**Health check shows a disk space warning**
-At least 40 GB free space is needed in Docker's storage directory. See [Moving Docker storage to a larger disk](docs/DEPLOYMENT.md#moving-docker-storage-to-a-larger-disk) if your root partition is limited.
-
-More: [Deployment Guide — Troubleshooting](docs/DEPLOYMENT.md#troubleshooting)
 
 ---
 

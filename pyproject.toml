@@ -4,12 +4,19 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "verdix"
-version = "0.1.1"
+version = "0.1.2"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["eval", "src"]
 asyncio_mode = "auto"
+# A known intermittent deadlock in the async DB teardown path can hang the
+# suite for 40+ minutes with zero output. thread-method dumps every thread's
+# stack at the timeout point, so a hang becomes diagnosable instead of
+# silent. Per-test, not per-suite — 30s is generous headroom over the
+# ~20-30s the whole suite normally takes.
+timeout = 30
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100

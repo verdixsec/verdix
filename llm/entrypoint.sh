@@ -1,21 +1,17 @@
 #!/bin/sh
 # Verdix lean-llm first-run entrypoint.
 # Idempotent: if the model is already imported into Ollama, skips everything.
-# Fresh install: pulls the GGUF from ghcr.io into the persisted verdix_models
-# volume, verifies its sha256, stages a Modelfile with an absolute FROM path,
-# and imports it via `ollama create`.
+# Fresh install: pulls the model natively from ghcr.io (Ollama-native OCI
+# manifest, published separately by maintainer tooling) via `ollama pull`, then
+# aliases it to the local tag the app expects via `ollama cp`. No oras, no
+# GGUF cache dir, no sha256 verification, no `ollama create` — the pulled
+# blobs land directly in Ollama's own store at their final size (peak disk
+# == model size, ~11 GB, vs. the old two-copy ~23GB peak from staging a raw
+# GGUF and then `ollama create`-importing it).
 set -eu
 
 MODEL_TAG="gemma4:e4b-it-q8_0"
-ARTIFACT_REF="ghcr.io/verdixsec/verdix/gemma4:e4b-it-q8_0"
-GGUF_FILENAME="gemma4-e4b-it-q8_0.gguf"
-MODELFILE_SRC="/opt/verdix/Modelfile"
-# CACHE_DIR lives inside the verdix_models volume (mounted at /root/.ollama)
-# so the pulled GGUF survives restarts even if `ollama create` hasn't
-# succeeded yet — a failed create must never trigger a re-download.
-CACHE_DIR="/root/.ollama/vx-model-cache"
-GGUF_PATH="$CACHE_DIR/$GGUF_FILENAME"
-STAGED_MODELFILE="$CACHE_DIR/Modelfile"
+ARTIFACT_REF="ghcr.io/verdixsec/gemma4:e4b-it-q8_0"
 
 # Start ollama serve in the background; we will wait on its PID at the end
 # so the container's main process remains ollama serve.
@@ -35,77 +31,37 @@ echo "[vx-entrypoint] Ollama API ready."
 
 # Fast path: model already imported (all restarts after a successful first boot).
 if ollama show "$MODEL_TAG" >/dev/null 2>&1; then
-    echo "[vx-entrypoint] Model $MODEL_TAG present — skipping fetch and import."
+    echo "[vx-entrypoint] Model $MODEL_TAG present — skipping fetch."
 else
-    mkdir -p "$CACHE_DIR"
+    echo "[vx-entrypoint] Model not present."
+    echo "[vx-entrypoint] Pulling ~11 GB from ghcr.io — this runs ONCE."
+    echo "[vx-entrypoint] The model lands directly in the verdix_models volume, so"
+    echo "[vx-entrypoint] restarts after this skip straight to serving in seconds."
 
-    # Skip the pull if a verified GGUF is already cached in the volume. This
-    # covers the retry-after-failed-create path and a restart mid-import.
-    # A failed `ollama create` must never trigger a re-pull — only a
-    # missing or corrupt cached GGUF does.
-    NEED_PULL=1
-    if [ -f "$GGUF_PATH" ]; then
-        echo "[vx-entrypoint] Found cached GGUF at $GGUF_PATH — verifying checksum..."
-        CACHED_SHA=$(sha256sum "$GGUF_PATH" | awk '{print $1}')
-        if [ "$CACHED_SHA" = "$GEMMA4_GGUF_SHA256" ]; then
-            echo "[vx-entrypoint] Cached GGUF checksum OK — skipping oras pull."
-            NEED_PULL=0
-        else
-            echo "[vx-entrypoint] Cached GGUF checksum mismatch — will re-fetch." >&2
-        fi
-    fi
-
-    if [ "$NEED_PULL" -eq 1 ]; then
-        echo "[vx-entrypoint] Model not cached."
-        echo "[vx-entrypoint] Downloading ~11 GB from ghcr.io — this runs ONCE."
-        echo "[vx-entrypoint] The GGUF is saved to the verdix_models volume, so"
-        echo "[vx-entrypoint] restarts after this skip straight to serving in seconds."
-
-        rm -rf "$CACHE_DIR"
-        mkdir -p "$CACHE_DIR"
-
-        # Pull the OCI artifact (GGUF + Modelfile + LICENSE) from our ghcr.
-        # OLLAMA_NO_CLOUD ensures no fallback to ollama.com.
-        oras pull "$ARTIFACT_REF" --output "$CACHE_DIR"
-
-        echo "[vx-entrypoint] Verifying GGUF checksum..."
-        ACTUAL=$(sha256sum "$GGUF_PATH" | awk '{print $1}')
-        if [ "$ACTUAL" != "$GEMMA4_GGUF_SHA256" ]; then
-            echo "[vx-entrypoint] ERROR: GGUF checksum mismatch." >&2
-            echo "  Expected: $GEMMA4_GGUF_SHA256" >&2
-            echo "  Got:      $ACTUAL" >&2
-            rm -f "$GGUF_PATH"
-            kill "$OLLAMA_PID" 2>/dev/null || true
-            exit 1
-        fi
-        echo "[vx-entrypoint] Checksum OK."
-    fi
-
-    # Stage a Modelfile with an ABSOLUTE FROM path. Ollama resolves a
-    # Modelfile's relative FROM against the Modelfile's own directory, not
-    # the process cwd, so `cd`-ing before `ollama create` does not help —
-    # the FROM line itself must point at an absolute path. Every other
-    # directive (TEMPLATE, RENDERER, PARSER, PARAMETER, stop tokens, LICENSE)
-    # is carried through verbatim from the image's canonical Modelfile;
-    # template fidelity is load-bearing for structured-JSON compliance.
-    # This also overwrites the reference Modelfile that `oras pull` wrote
-    # into CACHE_DIR (from the ghcr artifact), which still has the same
-    # unresolved relative FROM — the image's baked-in Modelfile is the one
-    # source of truth for import.
-    sed "s|^FROM .*|FROM $GGUF_PATH|" "$MODELFILE_SRC" > "$STAGED_MODELFILE"
-    echo "[vx-entrypoint] Staged Modelfile at $STAGED_MODELFILE"
-    echo "[vx-entrypoint] Resolved FROM: $GGUF_PATH"
-
-    echo "[vx-entrypoint] Importing model (ollama create)..."
-    if ! ollama create "$MODEL_TAG" -f "$STAGED_MODELFILE"; then
-        echo "[vx-entrypoint] ERROR: ollama create failed." >&2
-        echo "  Modelfile used: $STAGED_MODELFILE" >&2
-        echo "  Resolved FROM:  $GGUF_PATH" >&2
-        echo "  The GGUF is cached in the verdix_models volume and will NOT be" >&2
-        echo "  re-downloaded on the next restart — only 'ollama create' will retry." >&2
+    # OLLAMA_NO_CLOUD (set at image level) ensures no fallback to ollama.com.
+    # A partial/failed pull leaves no partial model tag behind — `ollama show`
+    # above will correctly report absent and this block retries on next boot.
+    if ! ollama pull "$ARTIFACT_REF"; then
+        echo "[vx-entrypoint] ERROR: ollama pull failed for $ARTIFACT_REF." >&2
         kill "$OLLAMA_PID" 2>/dev/null || true
         exit 1
     fi
+
+    # The pulled model is tagged with its full ghcr reference, not the short
+    # tag the app requests (VX_OLLAMA_MODEL / the healthcheck both expect
+    # "gemma4:e4b-it-q8_0"). `ollama cp` aliases it to that tag without
+    # copying any bytes — it just writes a second manifest pointing at the
+    # same blobs. Then drop the ghcr-named reference so `ollama list` only
+    # shows the canonical tag; the blobs stay because the aliased tag still
+    # references them.
+    echo "[vx-entrypoint] Aliasing $ARTIFACT_REF -> $MODEL_TAG..."
+    if ! ollama cp "$ARTIFACT_REF" "$MODEL_TAG"; then
+        echo "[vx-entrypoint] ERROR: ollama cp failed to alias $ARTIFACT_REF." >&2
+        kill "$OLLAMA_PID" 2>/dev/null || true
+        exit 1
+    fi
+    ollama rm "$ARTIFACT_REF" >/dev/null 2>&1 || true
+
     echo "[vx-entrypoint] Import complete."
 fi
 

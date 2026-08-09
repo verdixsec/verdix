@@ -121,9 +121,11 @@ async def test_non_alert_events_indexed_in_eve_events(tmp_path: Path) -> None:
         return len(await store.get_correlated_events(10)) >= 3
 
     await _poll_until(_ready)
+    # Read before cancel: _cancel tears down async pool connections which can
+    # leave the pool in a broken state if cleanup hits a CancelledError.
+    events = await store.get_correlated_events(10)
     await _cancel(task)
 
-    events = await store.get_correlated_events(10)
     assert len(events) == 3
     assert {e["event_type"] for e in events} == {"dns", "http", "tls"}
 
@@ -141,9 +143,11 @@ async def test_alert_stored_in_alerts_table(tmp_path: Path) -> None:
         return len(await store.query_alerts()) >= 1
 
     await _poll_until(_ready)
+    # Read before cancel: _cancel tears down async pool connections which can
+    # leave the pool in a broken state if cleanup hits a CancelledError.
+    alerts = await store.query_alerts()
     await _cancel(task)
 
-    alerts = await store.query_alerts()
     assert len(alerts) == 1
     assert alerts[0]["flow_id"] == 42
     assert alerts[0]["signature_id"] == 2000001
@@ -165,9 +169,11 @@ async def test_alert_also_indexed_in_eve_events(tmp_path: Path) -> None:
         return len(await store.get_correlated_events(99)) >= 1
 
     await _poll_until(_ready)
+    # Read before cancel: _cancel tears down async pool connections which can
+    # leave the pool in a broken state if cleanup hits a CancelledError.
+    events = await store.get_correlated_events(99)
     await _cancel(task)
 
-    events = await store.get_correlated_events(99)
     assert any(e["event_type"] == "alert" for e in events)
 
 
@@ -212,10 +218,11 @@ async def test_mixed_events_routed_correctly(tmp_path: Path) -> None:
         return len(events) >= 3 and len(alerts) >= 1
 
     await _poll_until(_ready)
-    await _cancel(task)
-
+    # Read before cancel: _cancel tears down async pool connections which can
+    # leave the pool in a broken state if cleanup hits a CancelledError.
     events = await store.get_correlated_events(55)
     alerts = await store.query_alerts()
+    await _cancel(task)
 
     assert len(events) == 3           # dns + http + alert all indexed in eve_events
     assert len(alerts) == 1           # one row in alerts table

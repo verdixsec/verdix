@@ -5,9 +5,15 @@ from __future__ import annotations
 
 import pytest
 
+from src.enrichment.maxmind.client import _SOURCE as _GEOIP_SOURCE
 from src.enrichment.models import EnrichmentResult, EnrichmentStatus, Indicator, IndicatorType
-from src.llm.prompt_builder import PromptBuilder, build_enrichment_context, eval_enrichment_context_from_hits
-
+from src.enrichment.rdap.client import _SOURCE as _RDAP_SOURCE
+from src.enrichment.virustotal.client import _SOURCE as _VT_SOURCE
+from src.llm.prompt_builder import (
+    PromptBuilder,
+    build_enrichment_context,
+    eval_enrichment_context_from_hits,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -146,6 +152,38 @@ class TestBuildEnrichmentContext:
         assert len(ctx) == 2
         assert ctx[0]["status"] == "contributed"
         assert ctx[1]["status"] == "not_configured"
+
+
+# ---------------------------------------------------------------------------
+# _source_display (via build_enrichment_context)
+# ---------------------------------------------------------------------------
+
+class TestSourceDisplay:
+    """Every live ThreatIntelProvider source key must resolve to a display name.
+
+    Regression guard: when GeoIPClient's source key changed from "maxmind" to
+    "geoip", the prompt_builder display map wasn't updated, so the LLM's
+    enrichment-source ledger silently showed the raw key "geoip" instead of a
+    label. Importing each client's real _SOURCE constant means a future
+    provider swap fails this test instead of reintroducing that bug.
+    """
+
+    @pytest.mark.parametrize(
+        "source_key",
+        [
+            pytest.param(_VT_SOURCE, id="virustotal"),
+            pytest.param(_RDAP_SOURCE, id="rdap"),
+            pytest.param(_GEOIP_SOURCE, id="geoip"),
+        ],
+    )
+    def test_live_source_key_has_display_name(self, source_key):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult.not_configured(source_key)
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx[0]["source"] != source_key, (
+            f"no display name mapped for live source key {source_key!r} — "
+            "add it to _source_display()'s _DISPLAY dict in prompt_builder.py"
+        )
 
 
 # ---------------------------------------------------------------------------

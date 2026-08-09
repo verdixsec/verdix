@@ -39,7 +39,7 @@ def build_enrichment_context(
     Each dict in the returned list has:
       type          — "ip" | "domain" | "hash" | "url"
       indicator     — the indicator value
-      source        — "VirusTotal" | "MaxMind" | "RDAP" etc.
+      source        — "VirusTotal" | "GeoIP" | "RDAP" etc.
       status        — "contributed" | "failing" | "not_configured"
       label         — human-readable verdict (computed from VT stats)
       vt_malicious  — int (VT contributed results only)
@@ -160,7 +160,7 @@ class PromptBuilder:
 def _source_display(source: str) -> str:
     _DISPLAY = {
         "virustotal": "VirusTotal",
-        "maxmind": "MaxMind GeoIP",
+        "geoip": "GeoIP",
         "rdap": "RDAP",
     }
     return _DISPLAY.get(source.lower(), source)
