@@ -14,11 +14,11 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
 - Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server
 - **32 GB RAM minimum**: the LLM runs in-process and needs memory headroom
-- **30 GB free disk space minimum, 40 GB recommended**, split across two locations that land on different filesystems if you relocate Docker storage:
+- **60 GB free disk space**, split across two locations that land on different filesystems if you relocate Docker storage. Measured on a clean single-partition install: ~12 GB base OS + ~33 GB after Verdix (images + volumes) — a 40 GB box lands inside the app's own low-disk warning band on first boot, so 60 GB is the real recommendation:
   - **Images** (Docker's image/layer store, `/var/lib/containerd` when the containerd image store is in use): ~11 GB actual. The LLM runtime image bundles Ollama's CUDA/ROCm runtime and is ~10.6 GB of that on its own; the app image is ~0.4 GB. Budget **15 GB minimum, 20 GB recommended** here.
   - **Volumes** (Docker's data-root): ~12 GB actual. The `verdix_models` volume holds the ~11 GB Gemma model; `verdix_data` (database, GeoIP files, enrichment cache) is small but grows over time. Budget **15 GB minimum, 20 GB recommended** here.
 
-  On a default install (nothing relocated, everything on one disk), that's the combined 30/40 GB above. If you relocate Docker storage, check each location separately; see the note below.
+  If you relocate Docker storage so images and volumes land on different disks, check each location separately using the per-location budgets above; the combined 60 GB figure only applies to the default, nothing-relocated case. See the note below.
 
   The app's own health check (Setup screen and `/api/health`) only monitors the volumes location (15 GB min / 20 GB recommended), since it runs inside the app container, which has no visibility into Docker's image store. A green health check does not by itself confirm the images location has enough room; check that side manually before you install if you're unsure.
 - **16 cores is the reference configuration; no GPU required.** A verdict takes about two minutes on CPU, supporting 300–500 verdicts per day: enough for a tuned Suricata deployment.
@@ -26,12 +26,12 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
   Fewer than 16 cores will still run, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
 
   A GPU with 12 GB VRAM or more drops verdict time to about 30 seconds; Ollama uses it automatically.
+- **Outbound HTTPS access**, for RDAP domain lookups (runs on every alert, to the relevant TLD registry). VirusTotal, if you configure a key, also uses it. GeoIP works fully offline — the DB-IP database is embedded in the image.
 
 **You don't need:**
 
 - A GPU
 - Any changes to your Suricata config, SIEM, or production network
-- An internet connection for core functionality (VirusTotal is optional)
 
 > **Disk space:** if Docker's data directory is on a small root partition, move it before pulling images. See [Moving Docker storage to a larger disk](#moving-docker-storage-to-a-larger-disk) (including the containerd caveat if `docker info` reports `overlayfs` as the storage driver).
 
@@ -144,7 +144,7 @@ docker compose logs -f app
 
 ### Step 3 — Open the UI
 
-Open `http://localhost:8080` in a browser on this host, or `http://HOST_IP:8080` from any machine on the same network (replace `HOST_IP` with this host's IP address).
+Open `http://localhost:8080` in a browser on this host, or `http://APP_HOST_IP:8080` from any machine on the same network (replace `APP_HOST_IP` with this host's IP address).
 
 > **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations:
 > ```bash
@@ -190,7 +190,7 @@ flowchart LR
     suricatasvr -->|"NFS (ro)"| apphost
 ```
 
-**What this asks of the Suricata Server:** two read-only export lines in `/etc/exports`. The exports are strictly read-only; Verdix cannot write to the Suricata Server. They can be revoked in seconds.
+**What this asks of the Suricata Server:** two read-only export lines in `/etc/exports`, plus one dedicated service account (`verdix`, uid 38317) added to the group that owns the Suricata log/config files. Both are additive — no existing user, file, permission, or service is modified — and both revoke in seconds (`exportfs` edit + `userdel verdix`).
 
 ---
 
@@ -251,9 +251,28 @@ sudo firewall-cmd --reload
 
 > **Checkpoint:** from the Verdix Application Host: `nc -zv SURICATA_SERVER_IP 2049` prints `succeeded`.
 
+#### A4 — Create a service account for Verdix
+
+NFS's `sec=sys` security (the default, used above) authorizes by numeric uid/gid, not by name — there's no shared directory service between the two hosts to reconcile identities otherwise. Verdix's container always runs as uid/gid 38317 (fixed — see the Dockerfile), so the Suricata Server needs one account at that same uid, in the group that owns the exported files:
+
+```bash
+sudo useradd -r -u 38317 -s /usr/sbin/nologin verdix
+sudo usermod -aG "$(stat -c '%G' /var/log/suricata/eve.json)" verdix
+```
+
+The `stat` picks up whatever group actually owns `eve.json` on this install — `adm`, `suricata`, or something else entirely — so you don't need to know it in advance. If `suricata.yaml`'s owning group differs from `eve.json`'s, run the second command again against that path too.
+
+This is purely additive: `verdix` is a new account with no login shell and no existing file, permission, or service is touched. To remove it entirely: `sudo userdel verdix`.
+
+> **Checkpoint:** `id verdix` shows the new account in the expected group.
+
+> **If Verdix still can't read the files after this:** `rpc.mountd` caches group membership per client and may not pick up a group change on an already-running NFS server. Force it to re-check: `sudo exportfs -f`. Skipping this step looks identical to the fix not having worked.
+
 ---
 
 ### Step B — On the Verdix Application Host: mount, configure, and start
+
+Nothing in this step creates or changes any account on the Verdix Application Host. File access is governed entirely by the `verdix` account on the Suricata Server (Step A4) and the fixed uid/gid baked into the Verdix container image — the identity of whichever user runs `docker compose up` here is irrelevant to whether the app can read the mounts.
 
 #### B1 — Install the NFS client
 
@@ -282,14 +301,16 @@ ls /mnt/suricata_config/suricata.yaml  # should succeed
 ```
 
 > **Checkpoint:** both `ls` commands return the file without errors.
-> - "Permission denied" → check Step A3 (firewall)
+> - "Permission denied" → check Step A4 (service account) — this is a group/permission error, not a firewall one
 > - "No such file or directory" → check the paths in Step A2
+> - Mount hangs or times out → check Step A3 (firewall)
 
 #### B3 — Make mounts survive reboots
 
 ```bash
 echo 'SURICATA_SERVER_IP:/var/log/suricata  /mnt/suricata_logs    nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
 echo 'SURICATA_SERVER_IP:/etc/suricata      /mnt/suricata_config  nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload
 
 # Test without rebooting
 sudo umount /mnt/suricata_logs /mnt/suricata_config
@@ -326,11 +347,11 @@ docker compose logs -f app
 
 > **Checkpoint:** `eve_tailer_started` appears in the logs within 30 seconds of the containers coming up.
 
-**If eve.json is not being read:** the app container's entrypoint automatically detects `eve.json`'s owning group and joins it before starting, so no manual `stat -c "%g"` or `group_add` override is needed. Every mount logs which path the entrypoint took (already readable, joined an existing group, created a new one, or failed). Check it with:
+**If eve.json is not being read:** confirm Step A4 was completed — that's what actually grants access on NFS. The container's entrypoint logs which path it took (already readable, joined an existing group, created a new one, or failed) as a diagnostic, but it cannot grant access your NFS export doesn't already allow; see it with:
 ```bash
 docker compose logs app
 ```
-If the mount genuinely can't be read (SELinux context, POSIX ACLs beyond the owning group), the container exits at startup with a specific error naming the path, the GID, and the likely cause.
+If the mount genuinely can't be read (Step A4 wasn't done, `exportfs -f` wasn't run after a group change, SELinux context, or POSIX ACLs beyond the owning group), the container exits at startup with a specific error naming the path, the GID, and the likely cause.
 
 #### B6 — Open the UI
 
@@ -385,10 +406,16 @@ sudo apt-get install -y cifs-utils    # Ubuntu/Debian
 
 sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 
+# uid/gid are literal, not $(id -u)/$(id -g) — do not "simplify" this back to a
+# shell substitution. CIFS has no server-side identity resolution: these mount
+# options assign a single fixed owner to every file in the share as the Linux
+# client sees it, and that owner must be the Verdix container's appuser (uid/gid
+# 38317, fixed — see Dockerfile), not whichever account happens to run this
+# mount command on the host.
 sudo mount -t cifs //SURICATA_SERVER_IP/suricata-logs   /mnt/suricata_logs   \
-  -o ro,username=guest,password=,uid=$(id -u),gid=$(id -g)
+  -o ro,username=guest,password=,uid=38317,gid=38317
 sudo mount -t cifs //SURICATA_SERVER_IP/suricata-config /mnt/suricata_config \
-  -o ro,username=guest,password=,uid=$(id -u),gid=$(id -g)
+  -o ro,username=guest,password=,uid=38317,gid=38317
 ```
 
 Once the mounts are working, follow [Steps B4–B6](#b4--download-and-configure) from Topology 2, using `/mnt/suricata_logs` and `/mnt/suricata_config` as your paths.
@@ -464,7 +491,7 @@ Ensure `/etc/fstab` entries include `_netdev`. Check `dmesg | grep nfs` for moun
 That's expected and not a misconfiguration. The image no longer declares a fixed `USER`: the entrypoint starts as root to fix bind-mount permissions, then drops to `appuser` via `gosu`. `docker compose exec` opens its own session as the image's declared user (root), which is separate from the long-running app process. To see what the app itself runs as, check the process directly:
 ```bash
 docker compose exec app cat /proc/1/status | grep -E '^(Name|Uid)'
-# Expect: Uid: 1000 1000 1000 1000 (appuser). PID 1 is the app process
+# Expect: Uid: 38317 38317 38317 38317 (appuser). PID 1 is the app process
 # itself, since the entrypoint execs into it rather than leaving a wrapper running.
 ```
 
@@ -490,7 +517,7 @@ docker compose down -v
 
 ### Moving Docker storage to a larger disk
 
-If your root partition has less than 30 GB free (40 GB recommended), move Docker's storage before pulling images:
+If your root partition has less than 60 GB free, move Docker's storage before pulling images:
 
 ```bash
 # Stop Docker

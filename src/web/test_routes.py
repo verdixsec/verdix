@@ -198,6 +198,54 @@ class TestQueueRoute:
         resp = client.get("/queue?window=invalid")
         assert resp.status_code == 200
 
+    def test_queue_table_partial_never_includes_feedback_modal(self):
+        """Regression guard: the 15s background refresh (queue.html) replaces
+        #tableWrap's innerHTML wholesale. If the feedback modal — or any
+        future in-page form — ends up inside _queue_table.html instead of
+        staying a sibling of #tableWrap, it gets torn down on every refresh,
+        reintroducing the bug fixed in fix/queue-page-reload (a full-page
+        reload used to wipe an open modal mid-typing). Checked against the
+        raw template source so it fails even if nothing ever renders it.
+        """
+        path = os.path.join(
+            os.path.dirname(__file__), "templates", "_queue_table.html"
+        )
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+        assert "_feedback_modal.html" not in source
+        assert "feedbackModal" not in source
+
+
+class TestQueueRowsApi:
+    def test_queue_rows_requires_auth(self):
+        app = _make_app()
+        client = TestClient(app, follow_redirects=False)
+        resp = client.get("/api/queue-rows")
+        assert resp.status_code == 401
+
+    def test_queue_rows_returns_html_fragment_with_total_header(self):
+        app = _make_app()
+        from src.web import deps
+        deps._event_store.query_alerts = AsyncMock(return_value=[])
+
+        client = _logged_in_client(app)
+        resp = client.get("/api/queue-rows")
+        assert resp.status_code == 200
+        assert "X-Queue-Total" in resp.headers
+        assert resp.headers["X-Queue-Total"] == "0"
+        # The fragment must not carry the feedback modal along with it —
+        # same invariant as the source-file check above, verified end to
+        # end through the actual route this time.
+        assert "_feedback_modal.html" not in resp.text
+        assert "feedbackModal" not in resp.text
+
+    def test_queue_rows_window_param_accepted(self):
+        app = _make_app()
+        client = _logged_in_client(app)
+        for w in ("24h", "7d", "30d"):
+            resp = client.get(f"/api/queue-rows?window={w}")
+            assert resp.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Alert route tests

@@ -19,10 +19,15 @@ check_and_fix() {
     path="$1"
     label="$2"
 
-    if [ ! -e "$path" ]; then
-        # Missing mount is a config problem, not a permissions one — let the
-        # app's own health check report it with full context.
-        echo "[vx-entrypoint] $label: $path does not exist — skipping (the app's own health check will report the missing mount)."
+    # Existence and readability are probed as appuser, not root. On an NFS
+    # export with root_squash (the common case — see docs/DEPLOYMENT.md
+    # Topology 2), the server maps uid 0 to `nobody`, so root's own `test -e`
+    # can return false for a mount that genuinely exists and is readable to
+    # appuser. root_squash only squashes uid 0; appuser is unaffected, which
+    # is exactly why probing as appuser instead of root avoids the false
+    # negative.
+    if ! gosu appuser test -e "$path"; then
+        echo "[vx-entrypoint] $label: $path does not exist or is not visible to appuser — skipping. If this path should exist, check the mount and the export's root_squash setting."
         return 0
     fi
 
@@ -31,7 +36,10 @@ check_and_fix() {
         return 0
     fi
 
-    gid=$(stat -c '%g' "$path")
+    # Same root_squash reasoning as the existence/readability probes above:
+    # root reading the gid here would hit the same false failure once group
+    # detection actually needs to run.
+    gid=$(gosu appuser stat -c '%g' "$path")
     group_name=$(getent group "$gid" | cut -d: -f1)
 
     if [ -z "$group_name" ]; then
@@ -54,7 +62,7 @@ check_and_fix() {
     else
         echo "[vx-entrypoint] ERROR: appuser still cannot read $path after joining group '$group_name' (gid $gid)." >&2
         echo "[vx-entrypoint] This is usually SELinux (check 'ls -Z $path' on the host) or a POSIX ACL beyond the owning group (check 'getfacl $path')." >&2
-        echo "[vx-entrypoint] Fix the source permissions or grant appuser (uid 1000) explicit read access, then restart." >&2
+        echo "[vx-entrypoint] Fix the source permissions or grant appuser (uid 38317) explicit read access, then restart." >&2
         exit 1
     fi
 }

@@ -53,6 +53,22 @@ eval/data/*.log
 # Eval: large result files are committed intentionally (they are the evidence corpus)
 # No exclusions needed here — all eval/data/*.json are tracked
 
+# Eval-batch scratch data: raw per-run result JSONs + working writeups, not the
+# committed evidence corpus above. Untracked by design, not an unlogged session —
+# see CLAUDE.md "Working tree" and docs/progress.md sessions 36/40/44. Canonical
+# findings docs get promoted and committed explicitly once reviewed (e.g. the four
+# already-tracked eval/data/session36/*_session36.md publication files predate this
+# rule and are unaffected by it).
+eval/data/session36/
+
+# Root-level one-off eval/rebaseline driver scripts — private scratch, never
+# committed (see CLAUDE.md "Working tree").
+/rebaseline_*.ps1
+/eval_gemini_*.ps1
+
+# Ad hoc local test artifacts at repo root (e.g. session-51 GID entrypoint test tarballs)
+/*.tar
+
 # Docker override file — machine-specific dev config (TLS proxy CA mount, custom
 # GeoIP paths, test image pins). Each machine creates its own; never committed.
 # See docker-compose.override.yml.example for the committed template.

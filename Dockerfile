@@ -14,8 +14,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user and persistent-state directory.
-RUN useradd -u 1000 -m -s /bin/bash appuser \
+# Non-root user and persistent-state directory. Fixed uid/gid (not
+# configurable) — chosen to be distinguishable from any host-side account,
+# since it exists solely to be matched by a dedicated service account on the
+# NFS/SMB server, never by a login user. See docs/DEPLOYMENT.md Topology 2/3.
+RUN useradd -u 38317 -U -m -s /bin/bash appuser \
     && mkdir -p /var/lib/verdix/geoip \
     && chown -R appuser:appuser /var/lib/verdix
 
@@ -50,7 +53,7 @@ RUN chown -R appuser:appuser /var/lib/verdix
 # Entrypoint fixes bind-mount group permissions (see entrypoint.sh), then
 # execs into appuser — no application code ever runs as root. The image
 # stays without a USER directive so the entrypoint can start as root; the
-# actual running process is always appuser (uid 1000) once ENTRYPOINT
+# actual running process is always appuser (uid 38317) once ENTRYPOINT
 # execs, which is what `docker top` / `ps` inside the container will show.
 # Note: this means the image's *declared* USER is root, which trips
 # Kubernetes' `securityContext.runAsNonRoot: true` if this is ever deployed

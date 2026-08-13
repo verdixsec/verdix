@@ -7,7 +7,7 @@ import json
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 
 from src.web.app import templates
@@ -21,21 +21,37 @@ _VALID_STATUS_FILTERS = {"all", "analyzed", "deferred", "queued"}
 _GROUP_WINDOW_HOURS = 1  # collapse repeated (sig, src, dst) within this window
 
 
-@router.get("/queue")
-async def get_queue(request: Request, window: str = "24h", status: str = "all"):
-    if not is_authenticated(request):
-        return RedirectResponse("/login", status_code=303)
-
+def _normalize_window_status(window: str, status: str) -> tuple[str, str]:
     if window not in _WINDOW_HOURS:
         window = "24h"
     if status not in _VALID_STATUS_FILTERS:
         status = "all"
+    return window, status
 
+
+async def _query_rows_for(window: str, status: str) -> tuple[list[dict], int]:
+    """Shared by /queue and /api/queue-rows so both render the same rows."""
     window_hours = _WINDOW_HOURS[window]
     since = datetime.now(UTC) - timedelta(hours=window_hours)
 
     event_store = get_event_store()
     op_store = get_operational_store()
+
+    status_filter = None if status == "all" else status
+    alerts = await event_store.query_alerts(since=since, status=status_filter, limit=2000)
+    grouped_rows = await _build_queue_rows(alerts, op_store)
+    return grouped_rows, len(alerts)
+
+
+@router.get("/queue")
+async def get_queue(request: Request, window: str = "24h", status: str = "all"):
+    if not is_authenticated(request):
+        return RedirectResponse("/login", status_code=303)
+
+    window, status = _normalize_window_status(window, status)
+    since = datetime.now(UTC) - timedelta(hours=_WINDOW_HOURS[window])
+
+    event_store = get_event_store()
 
     # Header counts — always based on all statuses so the panel is truthful
     # regardless of which status tab is selected.
@@ -45,11 +61,7 @@ async def get_queue(request: Request, window: str = "24h", status: str = "all"):
     failed_count = status_counts.get("failed", 0)
     deferred_count = status_counts.get("deferred", 0)
 
-    # Display rows — filtered by the selected status tab.
-    status_filter = None if status == "all" else status
-    alerts = await event_store.query_alerts(since=since, status=status_filter, limit=2000)
-
-    grouped_rows = await _build_queue_rows(alerts, op_store)
+    grouped_rows, total = await _query_rows_for(window, status)
 
     # Time-behind estimate based on actively queued alerts only (not deferred).
     _DEFAULT_LATENCY_S = 150
@@ -72,8 +84,37 @@ async def get_queue(request: Request, window: str = "24h", status: str = "all"):
         "failed_count": failed_count,
         "deferred_count": deferred_count,
         "time_behind": time_behind,
-        "total": len(alerts),
+        "total": total,
     })
+
+
+@router.get("/api/queue-rows")
+async def get_queue_rows(request: Request, window: str = "24h", status: str = "all"):
+    """HTML fragment for the queue table's 15s background refresh.
+
+    Renders the exact same _queue_table.html partial /queue itself includes,
+    so there is one implementation of the row grouping/verdict-bubbling
+    display logic, not two that can drift. Returns HTML, not JSON, because
+    reimplementing that rendering in JS would be the second implementation
+    this is trying to avoid — see docs/progress.md session 57 for the
+    full design discussion.
+    """
+    # This endpoint is only ever called via fetch(), not browser navigation —
+    # a 303 here would be followed automatically and silently hand the JS the
+    # login page's HTML to inject into the table. Fail loudly instead, like
+    # the other /api/* routes do.
+    if not is_authenticated(request):
+        return Response(status_code=401)
+
+    window, status = _normalize_window_status(window, status)
+    grouped_rows, total = await _query_rows_for(window, status)
+
+    response = templates.TemplateResponse(request, "_queue_table.html", {
+        "rows": grouped_rows,
+        "window": window,
+    })
+    response.headers["X-Queue-Total"] = str(total)
+    return response
 
 
 _STATUS_RANK = {"analyzed": 5, "analyzing": 4, "queued": 3, "failed": 2, "deferred": 1}

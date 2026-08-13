@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.1.2](https://img.shields.io/badge/version-v0.1.2-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.2)
+[![Version: v0.1.3](https://img.shields.io/badge/version-v0.1.3-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.3)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -19,7 +19,7 @@ Your Suricata generates hundreds of EVE alerts a day. Most are false positives, 
 
 It drops in next to your existing Suricata installation via Docker. It reads your `eve.json` in real time, analyzes each alert, and produces a verdict with the full evidence chain attached. Your Suricata keeps running exactly as it was. Your SIEM keeps getting the same alerts. Nothing changes in your existing workflow. You have a second opinion on every alert.
 
-**The AI runs in Docker on your own hardware. No alert data, no IPs, nothing leaves your network.**
+**The AI runs in Docker on your own hardware. No payload data leaves the host.**
 
 ---
 
@@ -41,11 +41,11 @@ You accept the verdict or override it. Verdix never takes action on an alert aut
 
 | | |
 |---|---|
-| **Hardware** | 32 GB RAM · 16 CPU cores · 30 GB free disk space minimum (40 GB recommended) |
+| **Hardware** | 32 GB RAM · 16 CPU cores · 60 GB free disk space |
 | **GPU** | Not required. If present, Ollama uses it automatically, reducing verdict time from ~2 min to ~30 sec |
 | **Software** | Docker 24+ with the `docker compose` plugin · Suricata running and producing `eve.json` |
 | **OS** | Any Linux distribution that supports Docker 24+ (Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, Fedora, openSUSE, and others) |
-| **Network** | Outbound HTTPS optional but strongly recommended for VirusTotal · GeoIP works fully offline |
+| **Network** | Outbound HTTPS required for RDAP domain lookups · optional but recommended for VirusTotal · GeoIP works fully offline |
 
 **Fewer than 16 cores?** Verdix still runs, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
 
@@ -90,7 +90,7 @@ Before writing any product code, we built an independent evaluation harness and 
 
 The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Accuracy was 79.2% on the held-out set and the same on the development set. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run. VirusTotal reputation, RDAP domain registration, and GeoIP enrichment ran on every entry, matching the production pipeline.
 
-The corpus is built from malware PCAPs replayed through Emerging Threats Open rules plus benign false-positive traffic from real enterprise networks. It covers the categories Suricata sensors actually fire on: infostealers, RATs, loaders, and C2 frameworks (Lumma, AsyncRAT, AgentTesla, Remcos, RedLine, Cobalt Strike, and others).
+The corpus is built from malware PCAPs replayed through Emerging Threats Open rules, plus benign traffic from three sources: IoT-23 (a labeled academic honeypot-capture dataset), a capture of a personal host, and scripted traffic that trips Emerging Threats rules without being malicious. It covers the categories Suricata sensors actually fire on: infostealers, RATs, loaders, and C2 frameworks (Lumma, AsyncRAT, AgentTesla, Remcos, RedLine, Cobalt Strike, and others).
 
 **0.0% false-negative rate.** No confirmed true positive was classified as a false positive anywhere in the 327-alert corpus. The target is ≤5%; zero is the strongest possible result. Missing a real threat is the worst outcome for a security tool, so this is the number we watch most closely.
 

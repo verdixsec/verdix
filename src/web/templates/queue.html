@@ -137,7 +137,7 @@
       <a href="/queue?window=7d&status={{ status_filter }}"  class="window-tab {% if window == '7d'  %}active{% endif %}">7d</a>
       <a href="/queue?window=30d&status={{ status_filter }}" class="window-tab {% if window == '30d' %}active{% endif %}">30d</a>
     </div>
-    <span class="count-label">{{ total }} alert{{ 's' if total != 1 else '' }}</span>
+    <span class="count-label" id="queueTotal">{{ total }} alert{{ 's' if total != 1 else '' }}</span>
   </div>
 
   <div class="status-bar">
@@ -149,102 +149,87 @@
     </div>
   </div>
 
-  <div class="table-wrap">
-    {% if rows %}
-    <table>
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>Signature</th>
-          <th>Source &rarr; Destination</th>
-          <th>Verdict</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in rows %}
-        <tr class="alert-row" onclick="location.href='/alert/{{ row.alert_id }}'">
-          <td class="ts">
-            {% if row.event_timestamp %}
-              {{ row.event_timestamp[:16].replace('T', ' ') }} UTC
-            {% else %}--{% endif %}
-          </td>
-          <td class="sig">
-            {% if row.signature_severity %}
-              <span class="sev sev-{{ row.signature_severity }}">S{{ row.signature_severity }}</span>
-            {% endif %}
-            <span class="sig-name">{{ row.signature_msg or 'Unknown' }}</span>
-            {% if row.count > 1 %}
-              <span class="sig-count">&times;{{ row.count }}</span>
-            {% endif %}
-          </td>
-          <td class="network">
-            {{ row.src_ip or '?' }}{% if row.src_port %}:{{ row.src_port }}{% endif %}
-            &rarr;
-            {{ row.dst_ip or '?' }}{% if row.dst_port %}:{{ row.dst_port }}{% endif %}
-            {% if row.app_proto %}<span style="color:#6b7587;"> &middot; {{ row.app_proto }}</span>{% endif %}
-          </td>
-          <td class="verdict-cell">
-            {% if row.verdict_category == 'likely_tp' %}
-              <div><span class="badge badge-tp">TP</span></div>
-              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
-            {% elif row.verdict_category == 'suspicious_investigate' %}
-              <div><span class="badge badge-inv">Investigate</span></div>
-              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
-            {% elif row.verdict_category == 'likely_fp' %}
-              <div><span class="badge badge-fp">FP</span></div>
-              {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
-            {% else %}
-              <span class="badge badge-pend">Pending</span>
-            {% endif %}
-          </td>
-          <td class="status-cell">
-            {% set st = row.status %}
-            {% if st == 'analyzed' %}<span class="st-analyzed">analyzed</span>
-            {% elif st == 'queued' %}<span class="st-queued">queued</span>
-            {% elif st == 'deferred' %}<span class="st-deferred">deferred</span>
-            {% elif st == 'failed' %}<span class="st-failed">&#9888; failed</span>
-            {% elif st == 'analyzing' %}<span class="st-analyzing">analyzing&hellip;</span>
-            {% else %}<span class="st-queued">{{ st }}</span>{% endif %}
-            {% if row.disposition_id %}<span style="font-size:10px;color:#4a5468;display:block;">dispositioned</span>{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">
-      <div class="empty-icon">&#128270;</div>
-      <div class="empty-title">No alerts in the last {{ window }}</div>
-      <div class="empty-sub">Alerts will appear here as Verdix ingests eve.json.</div>
-    </div>
-    {% endif %}
+  <!--
+    #tableWrap's innerHTML is replaced wholesale every 15s by the background
+    refresh below (GET /api/queue-rows) instead of the full-page reload this
+    replaced. That reload used to destroy whatever the analyst had in
+    progress on the page — most visibly, an open "Send Feedback" modal got
+    wiped mid-typing, since a full navigation tears down the entire DOM,
+    modal included, even when the modal itself has nothing to do with the
+    queue table. Anything that represents in-progress user interaction
+    (the feedback modal, any future in-page form) MUST live OUTSIDE this
+    div, as a sibling in the page, not inside _queue_table.html — putting
+    it inside would silently reintroduce the exact bug this fixed the next
+    time the refresh fires. See _queue_table.html's own header comment and
+    the note by the feedback modal include below.
+  -->
+  <div class="table-wrap" id="tableWrap">
+    {% include '_queue_table.html' %}
   </div>
 </div>
 
 <script>
-  // Refresh queue depth panel every 15s; reload table if alerts are still processing.
-  var _deferredCount = {{ deferred_count }};
-  setInterval(function() {
+  // Background refresh, every 15s, unconditionally — the table used to only
+  // refresh when queued/analyzing was nonzero (via a full location.reload())
+  // and went stale the rest of the time, which was backwards: an idle queue
+  // is exactly when nothing else justifies leaving the table stale. Now both
+  // the depth panel and the table patch their own DOM in place; nothing on
+  // the page ever navigates or reloads, so nothing the analyst has in
+  // progress (scroll position, an open modal, anything typed) is destroyed
+  // by this timer.
+  var _window = {{ window|tojson }};
+  var _status = {{ status_filter|tojson }};
+
+  function _refreshQueueDepth() {
     fetch('/api/queue-depth').then(function(r) { return r.json(); }).then(function(d) {
       var panel = document.getElementById('queuePanel');
       if (!panel) return;
-      var deferredSuffix = _deferredCount > 0 ? ' &middot; ' + _deferredCount + ' deferred' : '';
+      var deferredSuffix = d.deferred > 0 ? ' &middot; ' + d.deferred + ' deferred' : '';
       if (d.queued > 0) {
         panel.innerHTML = '<span class="queue-dot warn"></span><span>' + d.queued + ' queued'
           + (d.time_behind ? ' &middot; ' + d.time_behind : '') + deferredSuffix + '</span>';
-        location.reload();
       } else if (d.analyzing > 0) {
         panel.innerHTML = '<span class="queue-dot warn"></span><span>analyzing&hellip;' + deferredSuffix + '</span>';
-        location.reload();
       } else if (d.failed > 0) {
         panel.innerHTML = '<span class="queue-dot red"></span><span>' + d.failed + ' failed' + deferredSuffix + '</span>';
       } else {
         panel.innerHTML = '<span class="queue-dot"></span><span>Queue clear' + deferredSuffix + '</span>';
       }
     }).catch(function() {});
+  }
+
+  function _refreshQueueTable() {
+    var url = '/api/queue-rows?window=' + encodeURIComponent(_window) + '&status=' + encodeURIComponent(_status);
+    fetch(url).then(function(r) {
+      if (!r.ok) return null;  // e.g. session expired — leave the table as-is, don't blank it
+      return r.text().then(function(html) { return {html: html, total: r.headers.get('X-Queue-Total')}; });
+    }).then(function(res) {
+      if (!res) return;
+      var wrap = document.getElementById('tableWrap');
+      if (wrap) wrap.innerHTML = res.html;
+      var totalEl = document.getElementById('queueTotal');
+      if (totalEl && res.total !== null) {
+        var n = parseInt(res.total, 10);
+        totalEl.textContent = n + ' alert' + (n !== 1 ? 's' : '');
+      }
+    }).catch(function() {});
+  }
+
+  setInterval(function() {
+    _refreshQueueDepth();
+    _refreshQueueTable();
   }, 15000);
 </script>
+<!--
+  The feedback modal deliberately lives here, outside #tableWrap, as a
+  sibling of the refreshed region rather than inside it. The 15s background
+  refresh above replaces #tableWrap's innerHTML directly — anything placed
+  inside that div gets torn down on the same schedule. This used to be a
+  full-page location.reload() instead, which destroyed an open feedback
+  modal (and everything else in progress) regardless of where it lived in
+  the DOM; the current split keeps the refresh scoped to the table only.
+  Keep it out here.
+-->
 {% include '_feedback_modal.html' %}
 </body>
 </html>

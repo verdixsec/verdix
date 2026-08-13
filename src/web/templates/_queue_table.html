@@ -1,0 +1,81 @@
+{# SPDX-License-Identifier: AGPL-3.0-only #}
+{# Copyright (C) 2026 Dillon Jayanthan #}
+{# Queue table rows — included by queue.html's initial render and served
+   directly (as an HTML fragment) by GET /api/queue-rows for the 15s
+   background refresh. One implementation of the row grouping/verdict-
+   bubbling display logic, used both places, so the two can't drift.
+
+   This template renders ONLY the alert table. It must never include
+   persistent UI (the feedback modal, forms holding in-progress analyst
+   input) — anything included here gets torn down and rebuilt every time
+   the background refresh swaps #tableWrap's innerHTML. See the comment
+   at this template's include point in queue.html for why that matters. #}
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Timestamp</th>
+      <th>Signature</th>
+      <th>Source &rarr; Destination</th>
+      <th>Verdict</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr class="alert-row" onclick="location.href='/alert/{{ row.alert_id }}'">
+      <td class="ts">
+        {% if row.event_timestamp %}
+          {{ row.event_timestamp[:16].replace('T', ' ') }} UTC
+        {% else %}--{% endif %}
+      </td>
+      <td class="sig">
+        {% if row.signature_severity %}
+          <span class="sev sev-{{ row.signature_severity }}">S{{ row.signature_severity }}</span>
+        {% endif %}
+        <span class="sig-name">{{ row.signature_msg or 'Unknown' }}</span>
+        {% if row.count > 1 %}
+          <span class="sig-count">&times;{{ row.count }}</span>
+        {% endif %}
+      </td>
+      <td class="network">
+        {{ row.src_ip or '?' }}{% if row.src_port %}:{{ row.src_port }}{% endif %}
+        &rarr;
+        {{ row.dst_ip or '?' }}{% if row.dst_port %}:{{ row.dst_port }}{% endif %}
+        {% if row.app_proto %}<span style="color:#6b7587;"> &middot; {{ row.app_proto }}</span>{% endif %}
+      </td>
+      <td class="verdict-cell">
+        {% if row.verdict_category == 'likely_tp' %}
+          <div><span class="badge badge-tp">TP</span></div>
+          {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+        {% elif row.verdict_category == 'suspicious_investigate' %}
+          <div><span class="badge badge-inv">Investigate</span></div>
+          {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+        {% elif row.verdict_category == 'likely_fp' %}
+          <div><span class="badge badge-fp">FP</span></div>
+          {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
+        {% else %}
+          <span class="badge badge-pend">Pending</span>
+        {% endif %}
+      </td>
+      <td class="status-cell">
+        {% set st = row.status %}
+        {% if st == 'analyzed' %}<span class="st-analyzed">analyzed</span>
+        {% elif st == 'queued' %}<span class="st-queued">queued</span>
+        {% elif st == 'deferred' %}<span class="st-deferred">deferred</span>
+        {% elif st == 'failed' %}<span class="st-failed">&#9888; failed</span>
+        {% elif st == 'analyzing' %}<span class="st-analyzing">analyzing&hellip;</span>
+        {% else %}<span class="st-queued">{{ st }}</span>{% endif %}
+        {% if row.disposition_id %}<span style="font-size:10px;color:#4a5468;display:block;">dispositioned</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  <div class="empty-icon">&#128270;</div>
+  <div class="empty-title">No alerts in the last {{ window }}</div>
+  <div class="empty-sub">Alerts will appear here as Verdix ingests eve.json.</div>
+</div>
+{% endif %}
