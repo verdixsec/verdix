@@ -146,7 +146,10 @@
     document.getElementById('fbPreviewToggle').textContent = 'Preview payload';
     document.getElementById('fbForm').hidden = false;
     document.getElementById('fbSuccess').hidden = true;
-    document.getElementById('fbFooter').hidden = false;
+    // fbFooter has an inline display:flex, which always wins over the
+    // [hidden] UA rule (no !important there) -- toggle .style.display
+    // directly instead of .hidden, or this reset is a silent no-op.
+    document.getElementById('fbFooter').style.display = 'flex';
     document.getElementById('fbSubmitBtn').disabled = false;
     document.getElementById('fbSubmitBtn').textContent = 'Send';
     document.getElementById('fbDeleteBtn').disabled = false;
@@ -317,8 +320,12 @@
         document.getElementById('fbSuccessMsg').textContent =
           isDeletion ? 'Deletion request received' : 'Feedback sent — thank you!';
         document.getElementById('fbForm').hidden = true;
-        document.getElementById('fbFooter').hidden = true;
+        // .style.display, not .hidden -- see the note in openFeedbackModal().
+        document.getElementById('fbFooter').style.display = 'none';
         document.getElementById('fbSuccess').hidden = false;
+        sendBtn.disabled = false;
+        delBtn.disabled = false;
+        sendBtn.textContent = 'Send';
       } else {
         var msg = (res.data && res.data.detail) ? res.data.detail : 'Server error — please try again.';
         document.getElementById('fbError').textContent = msg;

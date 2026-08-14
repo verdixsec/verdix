@@ -10,7 +10,7 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 
 **You need:**
 
-- A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, or equivalent
+- A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, Fedora (current release, or the previous release), or equivalent
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
 - Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server
 - **32 GB RAM minimum**: the LLM runs in-process and needs memory headroom
@@ -62,7 +62,16 @@ You should see `Hello from Docker!`
 
 **RHEL 8+ / Rocky Linux / AlmaLinux / Oracle Linux:**
 ```bash
-sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo curl -fsSL https://download.docker.com/linux/rhel/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER && newgrp docker
+docker run hello-world
+```
+
+**Fedora:**
+```bash
+sudo curl -fsSL https://download.docker.com/linux/fedora/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo
 sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER && newgrp docker
@@ -144,13 +153,13 @@ docker compose logs -f app
 
 ### Step 3 — Open the UI
 
-Open `http://localhost:8080` in a browser on this host, or `http://APP_HOST_IP:8080` from any machine on the same network (replace `APP_HOST_IP` with this host's IP address).
+Open `http://localhost:8080` in a browser on this host, or `http://VERDIX_HOST_IP:8080` from any machine on the same network (replace `VERDIX_HOST_IP` with this host's IP address).
 
-> **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations:
+> **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations. Replace `ANALYST_WORKSTATION_IP` with each workstation's IP address:
 > ```bash
 > # Ubuntu/Debian (ufw)
-> sudo ufw allow from YOUR_WORKSTATION_IP to any port 8080
-> # RHEL/Rocky/Alma (firewalld)
+> sudo ufw allow from ANALYST_WORKSTATION_IP to any port 8080
+> # RHEL/Rocky/Alma/Fedora (firewalld)
 > sudo firewall-cmd --permanent --add-port=8080/tcp && sudo firewall-cmd --reload
 > ```
 
@@ -203,7 +212,7 @@ flowchart LR
 sudo apt-get update && sudo apt-get install -y nfs-kernel-server
 ```
 
-**RHEL 8+ / Rocky / AlmaLinux / Oracle Linux:**
+**RHEL 8+ / Rocky / AlmaLinux / Oracle Linux / Fedora:**
 ```bash
 sudo dnf install -y nfs-utils
 sudo systemctl enable --now nfs-server rpcbind
@@ -219,11 +228,11 @@ sudo systemctl enable --now nfsserver
 
 #### A2 — Add the export entries
 
-Replace `APP_HOST_IP` with the IP address of your Verdix Application Host:
+Replace `VERDIX_HOST_IP` with the IP address of your Verdix Application Host:
 
 ```bash
-echo '/var/log/suricata  APP_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
-echo '/etc/suricata      APP_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/var/log/suricata  VERDIX_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/etc/suricata      VERDIX_HOST_IP(ro,sync,no_subtree_check)' | sudo tee -a /etc/exports
 sudo exportfs -ra
 ```
 
@@ -235,21 +244,23 @@ If your Suricata logs or config live in non-standard paths, adjust the left side
 
 **Ubuntu / Debian (ufw):**
 ```bash
-sudo ufw allow from APP_HOST_IP to any port 2049
-sudo ufw allow from APP_HOST_IP to any port 111
+sudo ufw allow from VERDIX_HOST_IP to any port 2049
+sudo ufw allow from VERDIX_HOST_IP to any port 111
 sudo ufw reload
 ```
 
-**RHEL / Oracle Linux (firewalld):**
+**RHEL / Rocky / AlmaLinux / Oracle Linux / Fedora (firewalld):**
 ```bash
-sudo firewall-cmd --permanent --add-service=nfs --source=APP_HOST_IP
-sudo firewall-cmd --permanent --add-service=rpc-bind --source=APP_HOST_IP
+sudo firewall-cmd --permanent --add-service=nfs --source=VERDIX_HOST_IP
+sudo firewall-cmd --permanent --add-service=rpc-bind --source=VERDIX_HOST_IP
 sudo firewall-cmd --reload
 ```
 
+> Fedora Server's default firewalld zone is `FedoraServer`, not `public` (RHEL's default) — these commands don't pass `--zone`, so they land in whatever the box's default is. Syntax is identical either way; if a rule doesn't seem to apply, check with `firewall-cmd --get-default-zone`.
+
 **No firewall or internal-only network:** skip this step.
 
-> **Checkpoint:** from the Verdix Application Host: `nc -zv SURICATA_SERVER_IP 2049` prints `succeeded`.
+> **Checkpoint:** from the Verdix Application Host: `nc -zv SURICATA_HOST_IP 2049` (replace `SURICATA_HOST_IP` with the Suricata Server's IP address) prints `succeeded`.
 
 #### A4 — Create a service account for Verdix
 
@@ -281,20 +292,39 @@ Nothing in this step creates or changes any account on the Verdix Application Ho
 sudo apt-get install -y nfs-common
 ```
 
-**RHEL / Rocky / AlmaLinux / Oracle Linux:**
+**RHEL / Rocky / AlmaLinux / Oracle Linux / Fedora:**
 ```bash
 sudo dnf install -y nfs-utils && sudo systemctl enable --now rpcbind
 ```
 
+#### Check SELinux (RHEL / Rocky / AlmaLinux / Fedora only)
+
+RHEL 9, Rocky 9, AlmaLinux 9, and Fedora ship SELinux enforcing by default. Ubuntu and Debian use AppArmor instead — a different MAC layer, not the absence of one. Skip this section on those; it's SELinux-specific. Check:
+
+```bash
+getenforce
+```
+
+If it prints `Enforcing`: this guide's Docker CE install doesn't need the `virt_use_nfs` boolean. Its containers run unconfined as `spc_t`, not the confined `container_t` the boolean gates. (Confirmed by test on Fedora Server 44: `docker run --rm alpine cat /proc/self/attr/current` prints `spc_t`, and an NFS-backed file read succeeded with the boolean forced off.)
+
+A Podman deployment is different — Podman confines containers under `container_t` by default. Check the boolean before mounting, and set it only if it's off:
+
+```bash
+getsebool virt_use_nfs
+sudo setsebool -P virt_use_nfs on   # only if it printed 'off'
+```
+
+Don't use `:z`/`:Z` if you do hit a denial — those relabel the source path with `chcon`, but NFS mounts carry one blanket SELinux context for the whole filesystem rather than per-file labels, so `chcon` on it fails with "Operation not supported."
+
 #### B2 — Mount and verify
 
-Replace `SURICATA_SERVER_IP` with the Suricata Server's IP address:
+Mount the exports:
 
 ```bash
 sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 
-sudo mount -t nfs SURICATA_SERVER_IP:/var/log/suricata /mnt/suricata_logs
-sudo mount -t nfs SURICATA_SERVER_IP:/etc/suricata     /mnt/suricata_config
+sudo mount -t nfs SURICATA_HOST_IP:/var/log/suricata /mnt/suricata_logs
+sudo mount -t nfs SURICATA_HOST_IP:/etc/suricata     /mnt/suricata_config
 
 ls /mnt/suricata_logs/eve.json         # should succeed
 ls /mnt/suricata_config/suricata.yaml  # should succeed
@@ -308,8 +338,8 @@ ls /mnt/suricata_config/suricata.yaml  # should succeed
 #### B3 — Make mounts survive reboots
 
 ```bash
-echo 'SURICATA_SERVER_IP:/var/log/suricata  /mnt/suricata_logs    nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
-echo 'SURICATA_SERVER_IP:/etc/suricata      /mnt/suricata_config  nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
+echo 'SURICATA_HOST_IP:/var/log/suricata  /mnt/suricata_logs    nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
+echo 'SURICATA_HOST_IP:/etc/suricata      /mnt/suricata_config  nfs  ro,soft,timeo=30,_netdev  0  0' | sudo tee -a /etc/fstab
 sudo systemctl daemon-reload
 
 # Test without rebooting
@@ -351,17 +381,18 @@ docker compose logs -f app
 ```bash
 docker compose logs app
 ```
-If the mount genuinely can't be read (Step A4 wasn't done, `exportfs -f` wasn't run after a group change, SELinux context, or POSIX ACLs beyond the owning group), the container exits at startup with a specific error naming the path, the GID, and the likely cause.
+If the mount genuinely can't be read (Step A4 wasn't done, `exportfs -f` wasn't run after a group change, SELinux context — see the SELinux check under Step B — or POSIX ACLs beyond the owning group), the container exits at startup with a specific error naming the path, the GID, and the likely cause.
 
 #### B6 — Open the UI
 
-Open `http://localhost:8080` on this host, or `http://APP_HOST_IP:8080` from your analyst workstation (replace `APP_HOST_IP` with the Verdix Application Host's IP address).
+Open `http://localhost:8080` on this host, or `http://VERDIX_HOST_IP:8080` from your analyst workstation (replace `VERDIX_HOST_IP` with the Verdix Application Host's IP address).
 
-> **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations:
+> **Firewall note:** if this host has a firewall, allow inbound TCP 8080 from your analyst workstations. Replace `ANALYST_WORKSTATION_IP` with each workstation's IP address:
 > ```bash
-> sudo ufw allow from YOUR_WORKSTATION_IP to any port 8080        # ufw
+> sudo ufw allow from ANALYST_WORKSTATION_IP to any port 8080        # ufw
 > sudo firewall-cmd --permanent --add-port=8080/tcp && sudo firewall-cmd --reload  # firewalld
 > ```
+> Fedora Server's default firewalld zone is `FedoraServer`, not `public` (RHEL's default) — this command doesn't pass `--zone`, so it lands in whatever the box's default is. Syntax is identical either way; if the rule doesn't seem to apply, check with `firewall-cmd --get-default-zone`.
 
 Accept the EULA, then log in with the admin password you set in `.env`.
 
@@ -382,8 +413,8 @@ Use this when the Suricata Server is a Windows host or a NAS exporting via Samba
 ```mermaid
 flowchart LR
     subgraph suricatasvr["Suricata Server (Windows / NAS)"]
-        w_logs["\\\\SURICATA_SERVER_IP\\suricata-logs"]
-        w_config["\\\\SURICATA_SERVER_IP\\suricata-config"]
+        w_logs["\\\\SURICATA_HOST_IP\\suricata-logs"]
+        w_config["\\\\SURICATA_HOST_IP\\suricata-config"]
     end
     subgraph apphost["Verdix Application Host (32 GB RAM, 16 cores)"]
         m_logs["/mnt/suricata_logs/"]
@@ -398,11 +429,25 @@ flowchart LR
     suricatasvr -->|"SMB/CIFS (ro)"| apphost
 ```
 
-Replace `SURICATA_SERVER_IP` with the Suricata Server's IP address or hostname.
+Replace `SURICATA_HOST_IP` with the Suricata Server's IP address or hostname.
+
+**Check SELinux (RHEL / Rocky / AlmaLinux / Fedora only):** `virt_use_samba` ships **off** by default on Fedora Server 44 (confirmed) — unlike `virt_use_nfs`, which ships on. We haven't confirmed the default on RHEL 9, Rocky 9, or AlmaLinux 9.
+
+Whether setting it actually changes anything for Docker CE is **unverified, not confirmed either way**: `virt_use_samba`'s policy tunable gates the same `container_runtime_domain` that `virt_use_nfs` does, and Docker CE's containers run outside that domain (unconfined `spc_t` — see the NFS topology's SELinux check). By that same reasoning this boolean is likely inert for Docker CE here too, but this topology hasn't been exercised on an SELinux-enforcing box to confirm it. A Podman deployment, which confines by default, does need it.
+
+If you hit a denial reading the CIFS mount:
+
+```bash
+getenforce
+getsebool virt_use_samba
+sudo setsebool -P virt_use_samba on   # only if getsebool printed 'off'
+```
+
+Same reasoning as the NFS topology: CIFS mounts carry one blanket SELinux context for the whole filesystem, so `:z`/`:Z` won't work here either.
 
 ```bash
 sudo apt-get install -y cifs-utils    # Ubuntu/Debian
-# sudo dnf install -y cifs-utils     # RHEL/Rocky/Alma
+# sudo dnf install -y cifs-utils     # RHEL/Rocky/Alma/Fedora
 
 sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 
@@ -412,9 +457,9 @@ sudo mkdir -p /mnt/suricata_logs /mnt/suricata_config
 # client sees it, and that owner must be the Verdix container's appuser (uid/gid
 # 38317, fixed — see Dockerfile), not whichever account happens to run this
 # mount command on the host.
-sudo mount -t cifs //SURICATA_SERVER_IP/suricata-logs   /mnt/suricata_logs   \
+sudo mount -t cifs //SURICATA_HOST_IP/suricata-logs   /mnt/suricata_logs   \
   -o ro,username=guest,password=,uid=38317,gid=38317
-sudo mount -t cifs //SURICATA_SERVER_IP/suricata-config /mnt/suricata_config \
+sudo mount -t cifs //SURICATA_HOST_IP/suricata-config /mnt/suricata_config \
   -o ro,username=guest,password=,uid=38317,gid=38317
 ```
 

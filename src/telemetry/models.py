@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 SCHEMA_VERSION = 2
 
 # The only submission types the app emits and the receiver accepts. The
