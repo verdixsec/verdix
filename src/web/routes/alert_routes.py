@@ -34,6 +34,7 @@ async def get_alert(request: Request, alert_id: str):
                 "rows": [], "window": "24h", "status_filter": "all",
                 "queued_count": 0, "analyzing_count": 0, "failed_count": 0,
                 "deferred_count": 0, "total": 0, "time_behind": None,
+                "ingestion": {"state": "green"},
             },
             status_code=404,
         )

@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 
 from src.ingestion.models import EveEvent
+from src.ingestion.status import IngestionStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -26,6 +27,9 @@ class EveTailer:
         eve_path:        Path to eve.json (local or NFS/SMB mount — both look identical).
         queue:           Destination queue; shared with the broadcaster.
         poll_interval_ms: How often to check for new bytes. Default 500ms per ADR-001.
+        status:          Shared IngestionStatus (ADR-019). Defaults to a private
+                          instance when not supplied, so callers that don't care
+                          about live status (e.g. most tests) don't need to pass one.
     """
 
     def __init__(
@@ -34,10 +38,11 @@ class EveTailer:
         queue: asyncio.Queue[EveEvent],
         *,
         poll_interval_ms: int = 500,
+        status: IngestionStatus | None = None,
     ) -> None:
         self._path = Path(eve_path)
         self._queue = queue
-        self._poll_interval = poll_interval_ms / 1000.0
+        self._status = status if status is not None else IngestionStatus(poll_interval_ms)
         self._position: int = 0
         self._inode: int = 0
 
@@ -57,7 +62,7 @@ class EveTailer:
         logger.info("eve_tailer_started", path=str(self._path), position=self._position)
         try:
             while True:
-                await asyncio.sleep(self._poll_interval)
+                await asyncio.sleep(self._status.retry_interval_s)
                 await self._poll()
         except asyncio.CancelledError:
             logger.info("eve_tailer_stopped", path=str(self._path))
@@ -68,7 +73,13 @@ class EveTailer:
         try:
             stat = self._path.stat()
         except FileNotFoundError:
-            return  # rotation in progress; wait for file to reappear
+            return  # rotation in progress; wait for file to reappear — not a failure
+        except OSError as exc:
+            # e.g. PermissionError: the mount is visible but no longer readable
+            # (the 2026-08-12 mechanism). Unlike FileNotFoundError this is a
+            # real failure and must count toward the retry/red-status schedule.
+            self._on_failure(exc)
+            return
 
         # Rotation: inode changed (POSIX) or file smaller than our position (all platforms).
         # st_ino is 0 on Windows NTFS for most files, so we always check size too.
@@ -85,7 +96,12 @@ class EveTailer:
         await self._read_new_lines()
 
     async def _read_new_lines(self) -> None:
-        """Read from current position to EOF, parse JSON, enqueue valid events."""
+        """Read from current position to EOF, parse JSON, enqueue valid events.
+
+        Opens the file fresh on every call rather than holding a descriptor
+        across polls, so recovery from a permission change does not depend on
+        a file handle that survived it.
+        """
         try:
             with self._path.open("r", encoding="utf-8", errors="replace") as fh:
                 fh.seek(self._position)
@@ -101,4 +117,17 @@ class EveTailer:
                     await self._queue.put(EveEvent.from_dict(data))
                 self._position = fh.tell()
         except OSError as exc:
-            logger.warning("eve_tailer_read_error", error=str(exc))
+            self._on_failure(exc)
+            return
+        self._on_success()
+
+    def _on_failure(self, exc: Exception) -> None:
+        # Per-attempt detail at debug — a transient blip that recovers before
+        # the red threshold would otherwise leave no trace at all.
+        logger.debug("eve_tailer_read_error", error=str(exc))
+        if self._status.record_failure(exc):
+            logger.error("eve_tailer_status_red", error=str(exc))
+
+    def _on_success(self) -> None:
+        if self._status.record_success():
+            logger.info("eve_tailer_status_green")

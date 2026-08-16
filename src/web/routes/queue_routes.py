@@ -51,6 +51,22 @@ async def get_queue(request: Request, window: str = "24h", status: str = "all"):
     window, status = _normalize_window_status(window, status)
     since = datetime.now(UTC) - timedelta(hours=_WINDOW_HOURS[window])
 
+    # Server-rendered so the page is correct on first paint — a page loaded
+    # while ingestion is already red must not show "Queue clear" for the up
+    # to 15s before the background poll (queue.html) first runs. Same
+    # state/reason shape as /api/queue-depth's ingestion field, which keeps
+    # this current after load.
+    ingestion_status = getattr(request.app.state, "ingestion_status", None)
+    if ingestion_status is not None and ingestion_status.state == "red":
+        reason = (
+            ingestion_status.blocked_reason
+            or ingestion_status.last_error
+            or "ingestion pipeline is red"
+        )
+        ingestion = {"state": "red", "reason": reason}
+    else:
+        ingestion = {"state": "green"}
+
     event_store = get_event_store()
 
     # Header counts — always based on all statuses so the panel is truthful
@@ -85,6 +101,7 @@ async def get_queue(request: Request, window: str = "24h", status: str = "all"):
         "deferred_count": deferred_count,
         "time_behind": time_behind,
         "total": total,
+        "ingestion": ingestion,
     })
 
 

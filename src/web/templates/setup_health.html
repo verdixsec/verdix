@@ -83,6 +83,56 @@
 
     {% macro detail_class(status) %}{% if status == 'error' %}red{% elif status == 'warn' %}amber{% elif status == 'info' %}blue{% endif %}{% endmacro %}
 
+    {% if blocked_recheck %}
+    <!-- Startup Blocked (ADR-019 Stage 3) — Re-check result -->
+    <div class="section" style="border-color:#ff4e5b;">
+      <div class="section-header">
+        <span class="section-label">Startup Blocked</span>
+        <span class="section-tag tag-required">Blocked</span>
+      </div>
+      {% if blocked_recheck.all_ok %}
+      <div class="row">
+        <div class="status-icon status-ok">&#10003;</div>
+        <div class="row-label">Paths are readable now</div>
+        <div class="row-detail">
+          Run <span class="mono" style="color:#b8c1d0;">docker compose restart app</span>
+          to start ingestion. The gate is not lifted automatically — a restart is required.
+        </div>
+      </div>
+      {% else %}
+        {% if not blocked_recheck.suricata_yaml.ok %}
+        <div class="row">
+          <div class="status-icon status-error">&#10007;</div>
+          <div class="row-label">suricata.yaml</div>
+          <div class="row-detail red">{{ blocked_recheck.suricata_yaml.error }}</div>
+        </div>
+        {% endif %}
+        {% if not blocked_recheck.eve_json.ok %}
+        <div class="row">
+          <div class="status-icon status-error">&#10007;</div>
+          <div class="row-label">eve.json</div>
+          <div class="row-detail red">{{ blocked_recheck.eve_json.error }}</div>
+        </div>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Ingestion -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-label">Ingestion</span>
+        <span class="section-tag tag-warn">Live</span>
+      </div>
+      {% for item in health.ingestion %}
+      <div class="row">
+        {{ status_icon(item.status) }}
+        <div class="row-label">{{ item.label }}</div>
+        <div class="row-detail {{ detail_class(item.status) }}">{{ item.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
     <!-- Core Requirements -->
     <div class="section">
       <div class="section-header">
@@ -143,9 +193,16 @@
       {% endfor %}
     </div>
 
+    {% set gate_ok = health.all_required_ok and not blocked %}
     <div class="card-footer">
       <div class="card-footer-left">
-        {% if not health.all_required_ok %}
+        {% if blocked %}
+          {% if blocked_recheck and blocked_recheck.all_ok %}
+            Paths are readable now — restart the container to start ingestion, then click Retry.
+          {% else %}
+            Startup is blocked — fix the path(s) above, then click Retry.
+          {% endif %}
+        {% elif not health.all_required_ok %}
           Fix required items in <span class="mono" style="color:#b8c1d0;">docker-compose.yml</span>, then click Retry.
         {% else %}
           All required checks passed.
@@ -153,7 +210,7 @@
       </div>
       <div class="card-footer-right">
         <a href="/setup/health" class="btn btn-secondary">&#8635; Retry</a>
-        <a href="/login" class="btn btn-primary" {% if not health.all_required_ok %}style="pointer-events:none;opacity:0.4;"{% endif %}>
+        <a href="/login" class="btn btn-primary" {% if not gate_ok %}style="pointer-events:none;opacity:0.4;"{% endif %}>
           Go to Dashboard &rarr;
         </a>
       </div>

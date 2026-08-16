@@ -37,6 +37,25 @@ _ALWAYS_OPEN = frozenset({"/health"})
 # Paths accessible once license is accepted but before login.
 _POST_LICENSE_OPEN = frozenset({"/setup/health", "/login", "/logout", "/api/health"})
 
+# Paths that stay reachable while ingestion is blocked at startup (ADR-019).
+# Static assets are handled separately, by prefix, same as _ALWAYS_OPEN.
+_BLOCKED_OPEN = frozenset({"/setup/health", "/health", "/api/health", "/login", "/logout"})
+
+
+def _blocked_ingestion_status(request: Request):
+    """The ingestion status if it's in the startup-blocked state, else None.
+
+    Keyed on blocked_reason, not state: record_blocked() is the only path
+    that sets blocked_reason; record_failure() (the mid-run retry/red path)
+    never does. state == "red" alone would also match a transient mid-run
+    failure, which must NOT redirect away from the dashboard — there may be
+    verdicts worth reading and an analyst mid-review.
+    """
+    status = getattr(request.app.state, "ingestion_status", None)
+    if status is not None and status.blocked_reason is not None:
+        return status
+    return None
+
 
 def _returns_json_when_unauthed(path: str, method: str) -> bool:
     """True for paths that should 401 rather than redirect when not authenticated."""
@@ -53,6 +72,8 @@ class _FirstRunGateMiddleware(BaseHTTPMiddleware):
 
     Redirect matrix:
       License not accepted  → /setup/license      (except /setup/license, /api/health, /health)
+      License accepted,
+        ingestion blocked   → /setup/health        (except _BLOCKED_OPEN, static — ADR-019)
       License accepted,
         not authenticated   → /login (HTML paths) or 401 (API/POST paths)
       Authenticated trying
@@ -72,7 +93,20 @@ class _FirstRunGateMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
             return RedirectResponse("/setup/license", status_code=303)
 
-        # License accepted
+        # License accepted. Ingestion blocked at startup (ADR-019) takes
+        # priority over auth — an operator must be able to reach /setup/health
+        # (and /login, to get there authenticated) before anything else.
+        blocked_status = _blocked_ingestion_status(request)
+        if blocked_status is not None and path not in _BLOCKED_OPEN:
+            if path.startswith("/api/"):
+                # A JSON client can't act on an HTML redirect target — same
+                # shape as /health's Stage 2 response, not a redirect.
+                return JSONResponse(
+                    {"status": "blocked", "reason": blocked_status.blocked_reason},
+                    status_code=503,
+                )
+            return RedirectResponse("/setup/health", status_code=303)
+
         authenticated = is_authenticated(request)
 
         # Already logged in — bounce away from setup/login screens.

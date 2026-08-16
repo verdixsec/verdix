@@ -2,11 +2,14 @@
 # Copyright (C) 2026 Dillon Jayanthan
 """System health introspection for the /api/health endpoint and Setup screen.
 
-Checks are grouped into four categories matching the design:
+Checks are grouped into five categories matching the design:
   - core:        eve.json, admin password, Ollama
   - resources:   RAM, CPU, GPU (optional), disk
   - network:     proxy configuration
   - enrichment:  VirusTotal, GeoIP, RDAP (all optional)
+  - ingestion:   live pipeline state (ADR-019). Deliberately not merged with
+                 core's eve.json check — the two answers can disagree and
+                 the disagreement is the diagnosis; see _check_ingestion()
 
 run_health_check() is async and performs live I/O (Ollama ping, RDAP probe).
 All failures are caught and reported as check items — never raises.
@@ -18,9 +21,12 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psutil
+
+if TYPE_CHECKING:
+    from src.ingestion.status import IngestionStatus
 
 
 @dataclass
@@ -37,6 +43,7 @@ class HealthResult:
     resources: list[CheckItem] = field(default_factory=list)
     network: list[CheckItem] = field(default_factory=list)
     enrichment: list[CheckItem] = field(default_factory=list)
+    ingestion: list[CheckItem] = field(default_factory=list)
 
     @property
     def all_required_ok(self) -> bool:
@@ -55,16 +62,28 @@ class HealthResult:
             "resources": items(self.resources),
             "network": items(self.network),
             "enrichment": items(self.enrichment),
+            "ingestion": items(self.ingestion),
             "all_required_ok": self.all_required_ok,
         }
 
 
-async def run_health_check() -> HealthResult:
+async def run_health_check(ingestion_status: IngestionStatus | None = None) -> HealthResult:
+    """Run every check group.
+
+    ingestion_status is optional (ADR-019 Stage 2): the two call sites
+    (api_routes.api_health, setup.get_health_check) both have `request` and
+    can pass `request.app.state.ingestion_status`, but this module otherwise
+    has no access to app state. A missing status degrades to an "unknown"
+    check item rather than raising, matching how every other check here
+    reports absence (e.g. VirusTotal/GeoIP "not configured") instead of
+    failing the whole health check.
+    """
     result = HealthResult()
     result.core = await _check_core()
     result.resources = _check_resources()
     result.network = _check_network()
     result.enrichment = await _check_enrichment()
+    result.ingestion = _check_ingestion(ingestion_status)
     return result
 
 
@@ -75,18 +94,42 @@ async def run_health_check() -> HealthResult:
 async def _check_core() -> list[CheckItem]:
     items: list[CheckItem] = []
 
-    # eve.json
+    # eve.json — os.path.isfile()/os.access() are local predicates: over an
+    # NFS mount, they answer against the container's local uid/gid view,
+    # which can disagree with the server-side uid mapping that actually
+    # decides whether a read succeeds (root_squash remaps uid 0 or an
+    # unrecognized uid, independent of local group membership). On-box
+    # verification against real NFS hit exactly this: os.access() reported
+    # the file readable while the server denied the read, so the operator
+    # was told to fix a bind mount that was already correct. Attempt the
+    # real operation instead and branch on the OSError it raises — the only
+    # way to see a server-side decision rather than predict it.
     eve_path = os.environ.get("VX_EVE_LOG_PATH", "/host/suricata/logs/eve.json")
-    if os.path.isfile(eve_path) and os.access(eve_path, os.R_OK):
-        items.append(CheckItem("Alert log (eve.json)", "ok",
-                               f"Found at {eve_path}", required=True))
-    else:
+    try:
+        with open(eve_path, "rb"):
+            pass
+    except FileNotFoundError:
         items.append(CheckItem(
             "Alert log (eve.json)", "error",
             f"Not found at {eve_path} — update the bind mount path in "
             "docker-compose.yml and restart",
             required=True,
         ))
+    except PermissionError:
+        items.append(CheckItem(
+            "Alert log (eve.json)", "error",
+            f"Found at {eve_path} but permission denied — {_UNREADABLE_HINT}",
+            required=True,
+        ))
+    except OSError as exc:
+        items.append(CheckItem(
+            "Alert log (eve.json)", "error",
+            f"Cannot read {eve_path}: {exc}",
+            required=True,
+        ))
+    else:
+        items.append(CheckItem("Alert log (eve.json)", "ok",
+                               f"Found at {eve_path}", required=True))
 
     # Admin password
     if os.environ.get("VX_ADMIN_PASSWORD"):
@@ -107,8 +150,9 @@ async def _check_core() -> list[CheckItem]:
 
 
 async def _check_ollama() -> CheckItem:
-    import httpx
     from urllib.parse import urlparse, urlunparse
+
+    from src.infra.http.factory import create_http_client
 
     ollama_url = os.environ.get("VX_OLLAMA_URL", "http://llm:11434/api/chat")
     default_model = os.environ.get("VX_OLLAMA_MODEL", "gemma4:e4b-it-q8_0")
@@ -119,7 +163,7 @@ async def _check_ollama() -> CheckItem:
     tags_url = f"{base_url}/api/tags"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with create_http_client(10.0, "ollama") as client:
             resp = await client.get(tags_url)
         if resp.status_code != 200:
             return CheckItem(
@@ -143,13 +187,106 @@ async def _check_ollama() -> CheckItem:
             "AI Engine (Ollama)", "warn",
             f"Ollama running but no models loaded — pull {default_model}",
         )
-    except httpx.ConnectError:
+    except Exception as exc:  # noqa: BLE001
         return CheckItem(
             "AI Engine (Ollama)", "error",
-            f"Cannot reach Ollama at {ollama_url} — is the llm container running?",
+            f"Cannot reach Ollama at {ollama_url}: {exc} — is the llm container running?",
         )
+
+
+# ---------------------------------------------------------------------------
+# Ingestion checks (ADR-019)
+# ---------------------------------------------------------------------------
+
+def _check_ingestion(status: IngestionStatus | None) -> list[CheckItem]:
+    """Live pipeline state only — deliberately separate from Core
+    Requirements' eve.json readability check, not merged with it.
+
+    The two answers can disagree: on 2026-08-12, after the NFS group was
+    restored but before the container was restarted, the file would have
+    read as readable while the pipeline was still dead. "File readable,
+    pipeline stopped" means a restart is needed; "file unreadable, pipeline
+    retrying" means the mount itself needs fixing. Reporting one combined
+    status would erase that distinction, so this item stays on its own,
+    required=False — a transient mid-run red does not gate all_required_ok
+    (ADR-019 blocks only at startup, a later stage's concern).
+    """
+    if status is None:
+        return [CheckItem(
+            "Ingestion pipeline", "info",
+            "Status unavailable — could not determine pipeline state",
+        )]
+    if status.state == "red":
+        reason = status.blocked_reason or status.last_error or "unknown error"
+        since = status.state_changed_at.isoformat() if status.state_changed_at else "unknown"
+        return [CheckItem(
+            "Ingestion pipeline", "error",
+            f"Red since {since} — {reason}",
+        )]
+    return [CheckItem(
+        "Ingestion pipeline", "ok", "Green — reading eve.json normally",
+    )]
+
+
+# Same remediation universe entrypoint.sh's check_and_fix() already prints
+# for both paths (entrypoint.sh:63-65) — reused verbatim rather than
+# inventing new phrasing, since the operator may have just read this in
+# `docker compose logs`.
+_UNREADABLE_HINT = (
+    "check the mount and the export's root_squash setting. If the path "
+    "exists but is still unreadable, this is usually SELinux (check "
+    "'ls -Z' on the host) or a POSIX ACL beyond the owning group (check "
+    "'getfacl'). Grant the app user (uid 38317) explicit read access, "
+    "then restart."
+)
+
+
+def check_blocked_paths() -> dict[str, Any]:
+    """Re-probe the two paths that can block startup (ADR-019 Stage 3).
+
+    Used only by the Re-check action on /setup/health once ingestion is
+    already blocked. Never clears blocked_reason and never starts the
+    pipeline — EvePipeline/TriageWorker are constructed once, in the
+    lifespan startup, and a fixed GID needs entrypoint.sh's group-join,
+    which only runs at container start. Whether this reports success or
+    failure, a container restart is what actually recovers either way.
+    """
+    from src.infra.suricata_config.reader import read_config
+
+    suricata_path = os.environ.get(
+        "VX_SURICATA_CONFIG_PATH", "/host/suricata/config/suricata.yaml"
+    )
+    suricata_error: str | None = None
+    try:
+        read_config(suricata_path)
     except Exception as exc:  # noqa: BLE001
-        return CheckItem("AI Engine (Ollama)", "error", f"Unexpected error: {exc}")
+        suricata_error = f"{exc} — {_UNREADABLE_HINT}"
+
+    # Same local-predicate-vs-server-side-decision gap as _check_core()'s
+    # eve.json item above — attempt the real read rather than predicting it.
+    eve_path = os.environ.get("VX_EVE_LOG_PATH", "/host/suricata/logs/eve.json")
+    eve_ok = True
+    eve_error: str | None = None
+    try:
+        with open(eve_path, "rb"):
+            pass
+    except FileNotFoundError:
+        eve_ok = False
+        eve_error = f"{eve_path} does not exist — {_UNREADABLE_HINT}"
+    except PermissionError:
+        eve_ok = False
+        eve_error = f"{eve_path} exists but permission denied — {_UNREADABLE_HINT}"
+    except OSError as exc:
+        eve_ok = False
+        eve_error = f"Cannot read {eve_path}: {exc}"
+
+    return {
+        "suricata_yaml": {
+            "path": suricata_path, "ok": suricata_error is None, "error": suricata_error,
+        },
+        "eve_json": {"path": eve_path, "ok": eve_ok, "error": eve_error},
+        "all_ok": suricata_error is None and eve_ok,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -400,10 +537,10 @@ async def _check_enrichment() -> list[CheckItem]:
 
 
 async def _check_rdap() -> CheckItem:
-    import httpx
+    from src.infra.http.factory import create_http_client
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with create_http_client(8.0, "rdap") as client:
             resp = await client.get("https://data.iana.org/rdap/dns.json")
         if resp.status_code == 200:
             return CheckItem("RDAP (domain age)", "ok", "Registry reachable")

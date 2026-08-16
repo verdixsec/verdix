@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.1.4](https://img.shields.io/badge/version-v0.1.4-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.4)
+[![Version: v0.1.5](https://img.shields.io/badge/version-v0.1.5-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.5)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>

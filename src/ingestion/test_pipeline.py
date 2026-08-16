@@ -21,6 +21,7 @@ import pytest
 from src.infra.db.event_store import SQLiteEventStore
 from src.infra.db.session import close_db, init_db
 from src.ingestion.pipeline import EvePipeline
+from src.ingestion.status import IngestionStatus
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -92,7 +93,7 @@ async def _cancel(task: asyncio.Task) -> None:
 
 async def test_pipeline_raises_on_missing_file(tmp_path: Path) -> None:
     store = SQLiteEventStore()
-    pipeline = EvePipeline(tmp_path / "missing.json", store, **_FAST)
+    pipeline = EvePipeline(tmp_path / "missing.json", store, status=IngestionStatus(), **_FAST)
     with pytest.raises(FileNotFoundError):
         await pipeline.run()
 
@@ -101,7 +102,7 @@ async def test_pipeline_cancels_cleanly(tmp_path: Path) -> None:
     eve = tmp_path / "eve.json"
     eve.write_text("")
     store = SQLiteEventStore()
-    task = asyncio.create_task(EvePipeline(eve, store, **_FAST).run())
+    task = asyncio.create_task(EvePipeline(eve, store, status=IngestionStatus(), **_FAST).run())
     await asyncio.sleep(0.05)
     await _cancel(task)
 
@@ -110,7 +111,7 @@ async def test_non_alert_events_indexed_in_eve_events(tmp_path: Path) -> None:
     eve = tmp_path / "eve.json"
     eve.write_text("")
     store = SQLiteEventStore()
-    task = asyncio.create_task(EvePipeline(eve, store, **_FAST).run())
+    task = asyncio.create_task(EvePipeline(eve, store, status=IngestionStatus(), **_FAST).run())
     await asyncio.sleep(0.05)
 
     _write(eve, "dns", flow_id=10)
@@ -134,7 +135,7 @@ async def test_alert_stored_in_alerts_table(tmp_path: Path) -> None:
     eve = tmp_path / "eve.json"
     eve.write_text("")
     store = SQLiteEventStore()
-    task = asyncio.create_task(EvePipeline(eve, store, **_FAST).run())
+    task = asyncio.create_task(EvePipeline(eve, store, status=IngestionStatus(), **_FAST).run())
     await asyncio.sleep(0.05)
 
     _write_alert(eve, flow_id=42, sig_id=2000001)
@@ -160,7 +161,7 @@ async def test_alert_also_indexed_in_eve_events(tmp_path: Path) -> None:
     eve = tmp_path / "eve.json"
     eve.write_text("")
     store = SQLiteEventStore()
-    task = asyncio.create_task(EvePipeline(eve, store, **_FAST).run())
+    task = asyncio.create_task(EvePipeline(eve, store, status=IngestionStatus(), **_FAST).run())
     await asyncio.sleep(0.05)
 
     _write_alert(eve, flow_id=99)
@@ -182,7 +183,7 @@ async def test_alert_deferred_when_cap_reached(tmp_path: Path) -> None:
     eve.write_text("")
     store = SQLiteEventStore()
     task = asyncio.create_task(
-        EvePipeline(eve, store, **{**_FAST, "daily_cap": 0}).run()
+        EvePipeline(eve, store, status=IngestionStatus(), **{**_FAST, "daily_cap": 0}).run()
     )
     await asyncio.sleep(0.05)
 
@@ -205,7 +206,7 @@ async def test_mixed_events_routed_correctly(tmp_path: Path) -> None:
     eve = tmp_path / "eve.json"
     eve.write_text("")
     store = SQLiteEventStore()
-    task = asyncio.create_task(EvePipeline(eve, store, **_FAST).run())
+    task = asyncio.create_task(EvePipeline(eve, store, status=IngestionStatus(), **_FAST).run())
     await asyncio.sleep(0.05)
 
     _write(eve, "dns", flow_id=55)
@@ -227,3 +228,48 @@ async def test_mixed_events_routed_correctly(tmp_path: Path) -> None:
     assert len(events) == 3           # dns + http + alert all indexed in eve_events
     assert len(alerts) == 1           # one row in alerts table
     assert alerts[0]["flow_id"] == 55
+
+
+# ---------------------------------------------------------------------------
+# Failure handling (ADR-019)
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_survives_sustained_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Aug 12 regression at the pipeline level: a PermissionError from the
+    tailer's stat() used to propagate through asyncio.gather and cancel the
+    whole pipeline — indexer and dispatcher included. It must not anymore:
+    the tailer absorbs the failure into IngestionStatus and the pipeline task
+    keeps running indefinitely."""
+    eve = tmp_path / "eve.json"
+    eve.write_text("")
+    store = SQLiteEventStore()
+
+    real_stat = Path.stat
+    control = {"active": False}
+
+    def flaky_stat(self: Path, *args, **kwargs):
+        if control["active"] and self == eve:
+            raise PermissionError("simulated failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    status = IngestionStatus(poll_interval_ms=_FAST["poll_interval_ms"])
+    task = asyncio.create_task(
+        EvePipeline(eve, store, **_FAST, status=status).run()
+    )
+    await asyncio.sleep(0.05)
+
+    control["active"] = True
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if status.state == "red":
+            break
+
+    assert status.state == "red"
+    assert not task.done(), "a tailer-level PermissionError must not collapse the whole pipeline"
+
+    await _cancel(task)

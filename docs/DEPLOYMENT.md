@@ -491,13 +491,42 @@ sudo suricata -r /path/to/sample.pcap -l /var/log/suricata/ -k none
 
 ---
 
+## Health checks
+
+Verdix exposes three health routes, one per consumer:
+
+| Route | Consumer | Response |
+|---|---|---|
+| `/health` | Docker Compose's `app` healthcheck | `200 {"status": "ok"}` when ingestion is green; `503 {"status": "red", "reason": "..."}` when it's red or blocked |
+| `/api/health` | Monitoring scripts, the Setup screen's own poll | `200` JSON with the full check breakdown, always — exempt from the startup gate, so a monitor can reach it even while the UI is blocked |
+| `/setup/health` | The operator, in a browser | The same checks as `/api/health`, with remediation hints (file paths, the entrypoint's own diagnostics, a **Retry** button) |
+
+`/health` backs the `app` service's Docker healthcheck. A red or blocked ingestion pipeline makes `docker compose ps` report `app` as `unhealthy` — **this is by design, not a fault.** Plain Docker Compose reports health state; it does not act on it. `restart: unless-stopped` still governs restarts, and Compose does not restart a container for failing a healthcheck the way Kubernetes or Swarm would. An `unhealthy` app that the analyst can still use is the intended state for a mid-run ingestion failure — there may be verdicts already on the dashboard worth reading, so the session stays up.
+
+**What a red indicator means.** The queue dashboard's header shows a red "Ingestion stopped" indicator, and the health screen shows the matching state, in two distinct cases:
+
+- **Mid-run** — the tailer has failed to read `eve.json` five or more times in a row. It keeps retrying on a widening schedule and recovers on its own the next time a read succeeds; no restart needed. The dashboard stays reachable throughout.
+- **Startup-blocked** — `eve.json` or `suricata.yaml` was unreadable when the container started. Every route redirects to `/setup/health` except the health routes, static assets, and login/logout.
+
+**Recovery from a startup block always needs a container restart.** Fixing the underlying permission or mount problem is not enough by itself: click **Retry** on `/setup/health` to confirm the paths are readable now, then run
+
+```bash
+docker compose restart app
+```
+
+Retry only re-probes both paths — it does not lift the block itself, because the group-membership fix (`entrypoint.sh`) and pipeline construction (in the app's startup lifespan) both run only at container start.
+
+---
+
 ## Troubleshooting
 
 **Container exits immediately:**
 ```bash
 docker compose logs app
-# Look for: VX_ADMIN_PASSWORD not set, or eve.json path not found
+# Look for: VX_ADMIN_PASSWORD not set
 ```
+
+An unreadable `eve.json` or `suricata.yaml` no longer exits the container. The app starts and blocks the UI at `/setup/health` instead — see [Health checks](#health-checks). If every page redirects there, that's the app reporting the problem, not a crash.
 
 **No verdicts after 10 minutes:**
 ```bash

@@ -10,7 +10,7 @@ from fastapi.responses import RedirectResponse
 
 from src.web.app import templates
 from src.web.deps import check_license_accepted, get_operational_store, mark_license_accepted
-from src.web.health_check import run_health_check
+from src.web.health_check import check_blocked_paths, run_health_check
 
 router = APIRouter()
 
@@ -43,5 +43,12 @@ async def post_license(
 
 @router.get("/setup/health")
 async def get_health_check(request: Request):
-    result = await run_health_check()
-    return templates.TemplateResponse(request, "setup_health.html", {"health": result.to_dict()})
+    """Also serves as the Re-check action (ADR-019 Stage 3) — the page's
+    Retry button targets this same GET route, so every load re-probes."""
+    status = getattr(request.app.state, "ingestion_status", None)
+    result = await run_health_check(status)
+    blocked = status is not None and status.blocked_reason is not None
+    context: dict = {"health": result.to_dict(), "blocked": blocked}
+    if blocked:
+        context["blocked_recheck"] = check_blocked_paths()
+    return templates.TemplateResponse(request, "setup_health.html", context)

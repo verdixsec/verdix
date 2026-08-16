@@ -30,15 +30,28 @@ _feedback_tasks: set[asyncio.Task] = set()
 
 
 @router.get("/health")
-async def liveness():
-    """Docker-compose healthcheck endpoint. Always returns 200."""
-    return {"status": "ok"}
+async def liveness(request: Request):
+    """Docker-compose healthcheck endpoint (ADR-019).
+
+    200 when the ingestion pipeline is green; 503 with the reason when it is
+    red or blocked (record_blocked() also sets state to "red", so both cases
+    are covered by the same check — Stage 3 wires blocked in, this route
+    doesn't need to change to handle it). Missing status (e.g. a request
+    that never went through main.py's lifespan) reads as healthy rather
+    than failing the probe.
+    """
+    status = getattr(request.app.state, "ingestion_status", None)
+    if status is None or status.state != "red":
+        return JSONResponse({"status": "ok"})
+    reason = status.blocked_reason or status.last_error or "ingestion pipeline is red"
+    return JSONResponse({"status": "red", "reason": reason}, status_code=503)
 
 
 @router.get("/api/health")
-async def api_health():
+async def api_health(request: Request):
     """Full system health check — called by the Setup health-check page."""
-    result = await run_health_check()
+    status = getattr(request.app.state, "ingestion_status", None)
+    result = await run_health_check(status)
     return JSONResponse(result.to_dict())
 
 
@@ -46,6 +59,13 @@ async def api_health():
 async def api_queue_depth(request: Request):
     if not is_authenticated(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    status = getattr(request.app.state, "ingestion_status", None)
+    if status is not None and status.state == "red":
+        reason = status.blocked_reason or status.last_error or "ingestion pipeline is red"
+        ingestion = {"state": "red", "reason": reason}
+    else:
+        ingestion = {"state": "green"}
 
     store = get_event_store()
     try:
@@ -86,6 +106,7 @@ async def api_queue_depth(request: Request):
             "deferred": deferred_count,
             "failed": failed_count,
             "time_behind": time_behind,
+            "ingestion": ingestion,
         })
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)

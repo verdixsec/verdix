@@ -18,11 +18,11 @@
 services:
 
   app:
-    # Pinned to the v0.1.4 release build — the shipped compose file never
+    # Pinned to the v0.1.5 release build — the shipped compose file never
     # tracks :latest, so an install today and an install next month pull the
     # same bytes. CI moves :latest on every successful build; use that for
     # local dev only, never here.
-    image: ghcr.io/verdixsec/verdix/app:0.1.4
+    image: ghcr.io/verdixsec/verdix/app:0.1.5
     restart: unless-stopped
     depends_on:
       llm:
@@ -80,6 +80,20 @@ services:
 
     ports:
       - "8080:8080"
+    healthcheck:
+      # No curl in this image (python:3.13-slim + libgomp1 + gosu only —
+      # see Dockerfile) and the Dockerfile's own CMD already runs `python`,
+      # so this uses stdlib urllib rather than adding a package for one
+      # check. /health is green (200) while the ingestion pipeline is
+      # green, 503 when it's red or blocked (ADR-019). llm's own
+      # start_period (2400s, for its first-run model pull) does not delay
+      # this — app only waits on llm via depends_on's service_healthy
+      # condition, not on llm's start_period; 60s here covers app's own boot.
+      test: ["CMD", "python", "-c", "import sys, urllib.request as u\ntry:\n    sys.exit(0 if u.urlopen('http://localhost:8080/health', timeout=3).status == 200 else 1)\nexcept Exception:\n    sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks:
       - internal
 
@@ -96,14 +110,14 @@ services:
     # Subsequent starts load from the volume in seconds — no network fetch.
     # For air-gapped installs see Dockerfile.fat + docker-compose.fat.yml.
     #
-    # Pinned to the v0.1.4 release build (same reasoning as the app image
+    # Pinned to the v0.1.5 release build (same reasoning as the app image
     # above). This also fixes a real gap: :latest previously pointed at an
     # image built 2026-06-18, two days before the lean re-architecture even
     # started, and as of this pin that tag no longer resolves at all (the
     # version behind it was removed from ghcr). The image validated in the
     # 2026-06-21 field test lives under a different tag entirely (lean-rc1).
     # Never let this drift back to a floating tag.
-    image: ghcr.io/verdixsec/verdix/llm:0.1.4
+    image: ghcr.io/verdixsec/verdix/llm:0.1.5
     restart: unless-stopped
     volumes:
       - verdix_models:/root/.ollama

@@ -27,6 +27,7 @@ import structlog
 from src.ingestion.dispatcher import AlertDispatcher
 from src.ingestion.indexer import EveIndexer
 from src.ingestion.models import EveEvent
+from src.ingestion.status import IngestionStatus
 from src.ingestion.tailer import EveTailer
 from src.interfaces.event_store import EventStore
 
@@ -57,6 +58,11 @@ class EvePipeline:
         flush_interval_ms:     Indexer flush timeout (VX_INDEXER_BATCH_TIMEOUT_MS).
         context_delay_seconds: Dispatcher delay before alert insert (VX_FLOW_CONTEXT_DELAY_SECONDS).
         daily_cap:             Max non-deferred alerts per day (VX_TRIAGE_DAILY_CAP).
+        status:                Shared IngestionStatus (ADR-019), forwarded to the
+                                tailer. Required — an optional default here would let
+                                a wiring mistake silently record state into a private
+                                object nothing reads, exactly the failure this ADR
+                                exists to eliminate, one level down.
     """
 
     def __init__(
@@ -64,6 +70,7 @@ class EvePipeline:
         eve_path: str | Path,
         event_store: EventStore,
         *,
+        status: IngestionStatus,
         poll_interval_ms: int = 500,
         batch_size: int = 100,
         flush_interval_ms: int = 500,
@@ -74,8 +81,10 @@ class EvePipeline:
         self._indexer_queue: asyncio.Queue[EveEvent] = asyncio.Queue()
         self._dispatcher_queue: asyncio.Queue[EveEvent] = asyncio.Queue()
 
+        self._status = status
         self._tailer = EveTailer(
-            eve_path, self._tailer_queue, poll_interval_ms=poll_interval_ms
+            eve_path, self._tailer_queue,
+            poll_interval_ms=poll_interval_ms, status=self._status,
         )
         self._indexer = EveIndexer(
             self._indexer_queue, event_store,

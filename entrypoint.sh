@@ -26,8 +26,23 @@ check_and_fix() {
     # appuser. root_squash only squashes uid 0; appuser is unaffected, which
     # is exactly why probing as appuser instead of root avoids the false
     # negative.
-    if ! gosu appuser test -e "$path"; then
-        echo "[vx-entrypoint] $label: $path does not exist or is not visible to appuser — skipping. If this path should exist, check the mount and the export's root_squash setting."
+    #
+    # `stat` instead of `test -e` here so a genuinely missing path can be
+    # told apart from one that exists but isn't traversable/statable by
+    # appuser (a directory-level permission block, distinct from the
+    # file-level unreadable case handled by the `test -r` probe below) —
+    # GNU coreutils' stat gives distinct, English (POSIX-locale) stderr text
+    # for the two cases, which the Python-side equivalent (os.path.isfile +
+    # os.access) can't do for shell without this.
+    if ! stat_out=$(gosu appuser stat "$path" 2>&1); then
+        case "$stat_out" in
+            *"Permission denied"*)
+                echo "[vx-entrypoint] $label: $path exists but appuser cannot access it (permission denied) — skipping. Check the export's root_squash setting, SELinux context ('ls -Z $path' on the host), or a POSIX ACL on a parent directory ('getfacl')."
+                ;;
+            *)
+                echo "[vx-entrypoint] $label: $path does not exist — skipping. If this path should exist, check the mount."
+                ;;
+        esac
         return 0
     fi
 
@@ -38,8 +53,15 @@ check_and_fix() {
 
     # Same root_squash reasoning as the existence/readability probes above:
     # root reading the gid here would hit the same false failure once group
-    # detection actually needs to run.
-    gid=$(gosu appuser stat -c '%g' "$path")
+    # detection actually needs to run. Guarded against a TOCTOU: the path
+    # could go unreadable between the test -r above and this stat, and under
+    # set -eu an unguarded failure here would abort the whole script with
+    # only stat's raw stderr as a diagnostic — the app never gets a chance
+    # to start and report it.
+    if ! gid=$(gosu appuser stat -c '%g' "$path" 2>&1); then
+        echo "[vx-entrypoint] $label: could not stat $path to detect its group ($gid) — skipping group detection."
+        return 0
+    fi
     group_name=$(getent group "$gid" | cut -d: -f1)
 
     if [ -z "$group_name" ]; then
@@ -62,8 +84,7 @@ check_and_fix() {
     else
         echo "[vx-entrypoint] ERROR: appuser still cannot read $path after joining group '$group_name' (gid $gid)." >&2
         echo "[vx-entrypoint] This is usually SELinux (check 'ls -Z $path' on the host) or a POSIX ACL beyond the owning group (check 'getfacl $path')." >&2
-        echo "[vx-entrypoint] Fix the source permissions or grant appuser (uid 38317) explicit read access, then restart." >&2
-        exit 1
+        echo "[vx-entrypoint] Fix the source permissions or grant appuser (uid 38317) explicit read access. The application will start and report this on its health screen — restart the container once permissions are fixed." >&2
     fi
 }
 

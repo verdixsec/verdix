@@ -13,8 +13,10 @@ import json
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
 from src.ingestion.models import EveEvent, EventType
+from src.ingestion.status import IngestionStatus
 from src.ingestion.tailer import EveTailer
 
 _POLL_MS = 20           # poll interval for test tailers
@@ -181,3 +183,111 @@ async def test_rotation_detected_via_size_regression(tmp_path: Path) -> None:
 
     assert events[0].event_type == EventType.HTTP
     assert events[0].flow_id == 99
+
+
+# ---------------------------------------------------------------------------
+# Failure handling / IngestionStatus (ADR-019)
+# ---------------------------------------------------------------------------
+
+
+def _patch_stat_to_fail(monkeypatch: pytest.MonkeyPatch, target: Path, exc_type: type[OSError]):
+    """Make Path.stat() raise exc_type for `target` once armed, real stat otherwise."""
+    real_stat = Path.stat
+    control = {"active": False}
+
+    def flaky_stat(self: Path, *args, **kwargs):
+        if control["active"] and self == target:
+            raise exc_type("simulated failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    return control
+
+
+async def test_permission_error_from_stat_does_not_kill_tailer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Aug 12 regression: PermissionError from stat() is an OSError subtype not
+    covered by the old `except FileNotFoundError` clause, so it used to propagate
+    out of _poll(), out of run(), and kill the tailer task. It must now be caught,
+    counted as a failure, and flip status red without ending the task."""
+    eve = tmp_path / "eve.json"
+    eve.write_text("")
+    control = _patch_stat_to_fail(monkeypatch, eve, PermissionError)
+
+    queue: asyncio.Queue[EveEvent] = asyncio.Queue()
+    status = IngestionStatus(poll_interval_ms=_POLL_MS)
+    tailer = EveTailer(eve, queue, poll_interval_ms=_POLL_MS, status=status)
+    task = asyncio.create_task(tailer.run())
+    await asyncio.sleep(_POLL_MS * 2 / 1000)  # let startup complete normally
+
+    control["active"] = True
+    for _ in range(200):
+        await asyncio.sleep(_POLL_MS / 1000)
+        if status.state == "red":
+            break
+
+    assert status.state == "red", "status should have flipped red after 5 failures"
+    assert status.consecutive_failures >= 5
+    assert not task.done(), "PermissionError from stat() must not kill the tailer task"
+
+    task.cancel()
+    with pytest.raises((asyncio.CancelledError, Exception)):
+        await task
+
+
+async def test_file_not_found_from_stat_does_not_count_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FileNotFoundError from stat() means rotation in progress — legitimate,
+    must not count toward the failure/red-status schedule."""
+    eve = tmp_path / "eve.json"
+    eve.write_text("")
+    control = _patch_stat_to_fail(monkeypatch, eve, FileNotFoundError)
+
+    queue: asyncio.Queue[EveEvent] = asyncio.Queue()
+    status = IngestionStatus(poll_interval_ms=_POLL_MS)
+    tailer = EveTailer(eve, queue, poll_interval_ms=_POLL_MS, status=status)
+    task = asyncio.create_task(tailer.run())
+    await asyncio.sleep(_POLL_MS * 2 / 1000)
+
+    control["active"] = True
+    await asyncio.sleep(_POLL_MS * 5 / 1000)
+
+    assert status.consecutive_failures == 0
+    assert status.state == "green"
+    assert not task.done()
+
+    task.cancel()
+    with pytest.raises((asyncio.CancelledError, Exception)):
+        await task
+
+
+def test_transition_logging_fires_once_per_transition() -> None:
+    """_on_failure/_on_success must log a transition event only on a state
+    transition, not on every attempt — the old behavior logged eleven
+    identical warnings in ten seconds, which at the new 600s retry cap would
+    be thousands of lines over a weekend. Per-attempt detail still logs on
+    every failure, at debug, under the original event name — a transient
+    blip that recovers before the red threshold should still leave a trace
+    when diagnosing a flaky mount."""
+    queue: asyncio.Queue[EveEvent] = asyncio.Queue()
+    tailer = EveTailer(Path("/nonexistent/eve.json"), queue, poll_interval_ms=_POLL_MS)
+
+    with capture_logs() as logs:
+        for _ in range(4):
+            tailer._on_failure(PermissionError("denied"))  # still green
+        tailer._on_failure(PermissionError("denied"))  # 5th: green -> red
+        tailer._on_failure(PermissionError("denied"))  # still red
+        tailer._on_success()  # red -> green
+        tailer._on_success()  # already green
+
+    read_error_events = [entry for entry in logs if entry["event"] == "eve_tailer_read_error"]
+    red_events = [entry for entry in logs if entry["event"] == "eve_tailer_status_red"]
+    green_events = [entry for entry in logs if entry["event"] == "eve_tailer_status_green"]
+
+    assert len(read_error_events) == 6  # once per failed attempt, transition or not
+    assert all(entry["log_level"] == "debug" for entry in read_error_events)
+    assert all(entry["error"] == "denied" for entry in read_error_events)
+    assert len(red_events) == 1
+    assert len(green_events) == 1

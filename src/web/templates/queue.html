@@ -27,6 +27,7 @@
   .queue-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c984; }
   .queue-dot.warn { background: #f5a624; box-shadow: 0 0 6px rgba(245,166,36,0.5); }
   .queue-dot.red { background: #ff4e5b; box-shadow: 0 0 6px rgba(255,78,91,0.5); }
+  .ingestion-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #8b95a7; }
   .header-link { font-size: 12px; color: #6b7587; padding: 4px 10px; border-radius: 4px; transition: color 0.15s, background 0.15s; cursor: pointer; border: none; background: none; }
   .header-link:hover { color: #b8c1d0; background: rgba(255,255,255,0.04); }
   form.logout-form { display: inline; }
@@ -108,6 +109,12 @@
   <span class="ea-badge">Early Access</span>
   <div class="header-spacer"></div>
 
+  <a href="/setup/health" class="ingestion-indicator" id="ingestionIndicator"
+     title="{% if ingestion.state == 'red' %}{{ ingestion.reason }}{% endif %}">
+    <span class="queue-dot{% if ingestion.state == 'red' %} red{% endif %}" id="ingestionDot"></span>
+    <span id="ingestionLabel">{% if ingestion.state == 'red' %}Ingestion stopped{% else %}Ingestion live{% endif %}</span>
+  </a>
+
   <div class="queue-panel" id="queuePanel">
     {% if queued_count > 0 %}
       <span class="queue-dot warn"></span>
@@ -118,6 +125,9 @@
     {% elif failed_count > 0 %}
       <span class="queue-dot red"></span>
       <span>{{ failed_count }} failed{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
+    {% elif ingestion.state == 'red' %}
+      <span class="queue-dot red"></span>
+      <span>No new alerts — ingestion stopped{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
     {% else %}
       <span class="queue-dot"></span>
       <span>Queue clear{% if deferred_count %} &middot; {{ deferred_count }} deferred{% endif %}</span>
@@ -180,10 +190,37 @@
   var _window = {{ window|tojson }};
   var _status = {{ status_filter|tojson }};
 
+  function _updateIngestionIndicator(ingestion) {
+    var ind = document.getElementById('ingestionIndicator');
+    var dot = document.getElementById('ingestionDot');
+    var label = document.getElementById('ingestionLabel');
+    if (!ind || !dot || !label || !ingestion) return;
+    ind.style.display = 'inline-flex';
+    if (ingestion.state === 'red') {
+      dot.className = 'queue-dot red';
+      label.textContent = 'Ingestion stopped';
+      ind.title = ingestion.reason || '';
+    } else {
+      dot.className = 'queue-dot';
+      label.textContent = 'Ingestion live';
+      ind.title = '';
+    }
+  }
+
   function _refreshQueueDepth() {
-    fetch('/api/queue-depth').then(function(r) { return r.json(); }).then(function(d) {
+    fetch('/api/queue-depth').then(function(r) {
+      // Blocked (503, ADR-019 Stage 3) or session expired (401) — a non-2xx
+      // response still parses as JSON, but not into the queue-depth shape,
+      // so read it as "no data this round" and leave the panel as-is rather
+      // than letting undefined counts fall through to the zero-queue branch.
+      if (!r.ok) return null;
+      return r.json();
+    }).then(function(d) {
+      if (!d) return;
       var panel = document.getElementById('queuePanel');
+      _updateIngestionIndicator(d.ingestion);
       if (!panel) return;
+      var ingestionRed = d.ingestion && d.ingestion.state === 'red';
       var deferredSuffix = d.deferred > 0 ? ' &middot; ' + d.deferred + ' deferred' : '';
       if (d.queued > 0) {
         panel.innerHTML = '<span class="queue-dot warn"></span><span>' + d.queued + ' queued'
@@ -192,6 +229,12 @@
         panel.innerHTML = '<span class="queue-dot warn"></span><span>analyzing&hellip;' + deferredSuffix + '</span>';
       } else if (d.failed > 0) {
         panel.innerHTML = '<span class="queue-dot red"></span><span>' + d.failed + ' failed' + deferredSuffix + '</span>';
+      } else if (ingestionRed) {
+        // The 2026-08-12 failure mode: an empty queue means nothing to do
+        // only if ingestion is alive. Never let a red pipeline read as "Queue
+        // clear" — that's the exact copy that made a dead pipeline look like
+        // a quiet network.
+        panel.innerHTML = '<span class="queue-dot red"></span><span>No new alerts — ingestion stopped' + deferredSuffix + '</span>';
       } else {
         panel.innerHTML = '<span class="queue-dot"></span><span>Queue clear' + deferredSuffix + '</span>';
       }

@@ -24,9 +24,12 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import structlog
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 logger = structlog.get_logger(__name__)
 
@@ -86,7 +89,7 @@ def _sibling_path(base: str, name: str) -> str:
 
 def _build_lifespan(cfg: dict[str, Any]):
     @asynccontextmanager
-    async def lifespan(app: object) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from src.enrichment.maxmind.client import GeoIPClient
         from src.enrichment.rdap.client import RDAPClient
         from src.enrichment.virustotal.client import VirusTotalClient
@@ -116,6 +119,14 @@ def _build_lifespan(cfg: dict[str, Any]):
         from src.telemetry.install_id import ensure_install_id
         await ensure_install_id(operational_store)
 
+        # Live ingestion health (ADR-019). Constructed before the startup
+        # checks below so a blocked state can be recorded during them.
+        from src.ingestion.status import IngestionStatus
+
+        ingestion_status = IngestionStatus(poll_interval_ms=cfg["poll_interval_ms"])
+        app.state.ingestion_status = ingestion_status
+        blocking_reasons: list[str] = []
+
         # 2. Suricata config — degrade gracefully on missing file
         suricata_config = None
         try:
@@ -132,6 +143,33 @@ def _build_lifespan(cfg: dict[str, Any]):
                 detail=(
                     "Ingestion and triage will not start. "
                     "Correct VX_SURICATA_CONFIG_PATH and restart."
+                ),
+            )
+            blocking_reasons.append(
+                f"suricata.yaml unreadable at {cfg['suricata_config_path']}: {exc}"
+            )
+
+        # eve.json — no explicit startup check previously existed; an
+        # unreadable path only surfaced later, the first time the tailer
+        # polled (the 2026-08-12 mechanism). Check it at boot too.
+        eve_path = cfg["eve_log_path"]
+        if not (os.path.isfile(eve_path) and os.access(eve_path, os.R_OK)):
+            logger.warning(
+                "eve_log_unavailable_at_startup",
+                path=eve_path,
+                detail="Ingestion will not start. Correct VX_EVE_LOG_PATH and restart.",
+            )
+            blocking_reasons.append(f"eve.json unreadable at {eve_path}")
+
+        if blocking_reasons:
+            blocked_reason = "; ".join(blocking_reasons)
+            ingestion_status.record_blocked(blocked_reason)
+            logger.error(
+                "ingestion_blocked_at_startup",
+                reason=blocked_reason,
+                detail=(
+                    "Ingestion and triage will not start this boot. "
+                    "See /setup/health."
                 ),
             )
 
@@ -163,7 +201,16 @@ def _build_lifespan(cfg: dict[str, Any]):
         # 6. Background tasks
         background_tasks: list[asyncio.Task] = []
 
-        if suricata_config is not None:
+        # Blocked startup (ADR-019 sec. 1) must not construct or start the
+        # pipeline/worker at all — starting them and letting the tailer fail
+        # immediately reproduces the exact eve_indexer_stopped/
+        # alert_dispatcher_stopped signature the 2026-08-12 incident left
+        # behind, on the path built to eliminate it. The condition is
+        # inlined (not hoisted to a bool) so mypy narrows suricata_config to
+        # non-None inside this block.
+        pipeline_started = False
+        if suricata_config is not None and not blocking_reasons:
+            pipeline_started = True
             from src.ingestion.pipeline import EvePipeline
 
             identity_provider = ReverseDNSIdentityProvider(
@@ -175,6 +222,7 @@ def _build_lifespan(cfg: dict[str, Any]):
                 poll_interval_ms=cfg["poll_interval_ms"],
                 context_delay_seconds=cfg["context_delay_s"],
                 daily_cap=cfg["daily_cap"],
+                status=ingestion_status,
             )
             worker = TriageWorker(
                 event_store=event_store,
@@ -202,7 +250,7 @@ def _build_lifespan(cfg: dict[str, Any]):
         logger.info(
             "verdix_started",
             tasks=[t.get_name() for t in background_tasks],
-            ingestion_active=suricata_config is not None,
+            ingestion_active=pipeline_started,
         )
 
         try:
