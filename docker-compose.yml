@@ -71,6 +71,7 @@ services:
       # ── Triage tuning (defaults work for most environments) ───────────────────
       VX_FLOW_CONTEXT_DELAY_SECONDS: "30"
       VX_TRIAGE_DAILY_CAP: "300"
+      VX_DAILY_RESET_HOUR: "0"
       VX_EVE_CONTEXT_RETENTION_DAYS: "7"
 
       # ── Proxy (uncomment if your network uses a forward proxy) ────────────────

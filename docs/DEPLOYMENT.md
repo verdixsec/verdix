@@ -13,7 +13,7 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 - A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, Fedora (current release, or the previous release), or equivalent
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
 - Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server
-- **32 GB RAM minimum**: the LLM runs in-process and needs memory headroom
+- **32 GB RAM minimum**: the LLM runs in the sibling `llm` container, not in-process with the app. The 32 GB minimum covers both containers on one host
 - **60 GB free disk space**, split across two locations that land on different filesystems if you relocate Docker storage. Measured on a clean single-partition install: ~12 GB base OS + ~33 GB after Verdix (images + volumes) — a 40 GB box lands inside the app's own low-disk warning band on first boot, so 60 GB is the real recommendation:
   - **Images** (Docker's image/layer store, `/var/lib/containerd` when the containerd image store is in use): ~11 GB actual. The LLM runtime image bundles Ollama's CUDA/ROCm runtime and is ~10.6 GB of that on its own; the app image is ~0.4 GB. Budget **15 GB minimum, 20 GB recommended** here.
   - **Volumes** (Docker's data-root): ~12 GB actual. The `verdix_models` volume holds the ~11 GB Gemma model; `verdix_data` (database, GeoIP files, enrichment cache) is small but grows over time. Budget **15 GB minimum, 20 GB recommended** here.
@@ -21,12 +21,14 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
   If you relocate Docker storage so images and volumes land on different disks, check each location separately using the per-location budgets above; the combined 60 GB figure only applies to the default, nothing-relocated case. See the note below.
 
   The app's own health check (Setup screen and `/api/health`) only monitors the volumes location (15 GB min / 20 GB recommended), since it runs inside the app container, which has no visibility into Docker's image store. A green health check does not by itself confirm the images location has enough room; check that side manually before you install if you're unsure.
-- **16 cores is the reference configuration; no GPU required.** A verdict takes about two minutes on CPU, supporting 300–500 verdicts per day: enough for a tuned Suricata deployment.
+- **16 cores is the reference configuration; no GPU required.** Verdix admits up to 300 alerts per day; see Daily capacity below.
 
   Fewer than 16 cores will still run, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
 
-  A GPU with 12 GB VRAM or more drops verdict time to about 30 seconds; Ollama uses it automatically.
+  A GPU with 12 GB VRAM or more drops verdict time to about 30 seconds (projected, not yet measured); Ollama uses it automatically.
 - **Outbound HTTPS access**, for RDAP domain lookups (runs on every alert, to the relevant TLD registry). VirusTotal, if you configure a key, also uses it. GeoIP works fully offline — the DB-IP database is embedded in the image.
+
+**Daily capacity.** Verdix admits up to `VX_TRIAGE_DAILY_CAP` alerts per day (default 300). The count is of alerts admitted since `VX_DAILY_RESET_HOUR` (default midnight local), not of verdicts produced, so an alert that is queued, in progress, or failed consumes a slot the same as one already analyzed. Once the day's count reaches the cap, each further alert is stored with status `deferred` and is not analyzed. Deferred alerts stay visible in the queue and keep that status; Verdix does not pick them up on a later day. You can open a deferred alert and record your own disposition, but no verdict is generated for it, and deferred alerts age out with the retention window. Raise `VX_TRIAGE_DAILY_CAP` if your hardware supports more throughput; a GPU-equipped host has considerably more headroom.
 
 **You don't need:**
 
@@ -124,6 +126,8 @@ VX_VIRUSTOTAL_API_KEY=
 
 **Also recommended:** add a free VirusTotal API key. Verdix queries VirusTotal for the reputation of IPs, domains, and hashes in the alert. DNS-only and ambiguous-domain alerts carry little evidence of their own, so external reputation is often what decides them. Without a key, those alerts still get a verdict, and the enrichment-source ledger shows VirusTotal as not configured.
 
+**Quota.** VirusTotal's free tier allows 500 requests per day. A single alert generates one to five lookups: up to two IP lookups (public addresses only) and up to three domain lookups drawn from correlated DNS, HTTP, and TLS events. Verdix caches every indicator result for 24 hours, so repeat sightings of the same address or domain cost nothing, and a repeated alert on the same signature and address pair within an hour skips enrichment entirely. On a first day with a cold cache and a busy sensor, 300 alerts can still approach or exceed the daily limit. When the quota is exhausted, Verdix serves the cached result and the enrichment-source ledger shows its age.
+
 Common path variants by Suricata installation method:
 
 | Installation | `VX_SURICATA_LOG_DIR` | `VX_SURICATA_CONFIG_DIR` |
@@ -171,7 +175,7 @@ Accept the EULA, then log in with the admin password you set in `.env`.
 curl http://testmynids.org/uid/index.html
 ```
 
-This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in ~2 minutes on a 16-core host.
+This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about three minutes on CPU.
 
 ---
 
@@ -402,7 +406,7 @@ Accept the EULA, then log in with the admin password you set in `.env`.
 curl http://testmynids.org/uid/index.html
 ```
 
-This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in ~2 minutes on a 16-core host.
+This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about three minutes on CPU.
 
 ---
 
