@@ -71,7 +71,7 @@ eval/data/session36/
 
 # Docker override file — machine-specific dev config (TLS proxy CA mount, custom
 # GeoIP paths, test image pins). Each machine creates its own; never committed.
-# See docker-compose.override.yml.example for the committed template.
+# See docs/DEPLOYMENT.md "Optional configuration" for the inline snippets.
 docker-compose.override.yml
 
 # Docker / model weights (never commit)

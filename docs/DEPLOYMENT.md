@@ -591,7 +591,7 @@ docker compose down -v
 
 ## Optional configuration
 
-> **About `docker-compose.override.yml`:** Docker Compose automatically merges a file named `docker-compose.override.yml` with `docker-compose.yml` on every `docker compose` command; no extra flags needed. You don't need one for a standard install: `VX_SURICATA_LOG_DIR` and `VX_SURICATA_CONFIG_DIR` in `.env` already cover the NFS/SMB mount paths in Topologies 2 and 3. Create one only for the host-specific customizations below (TLS-proxy CA bundle, custom GeoIP database paths, pinning a specific image tag for testing). A commented template covering these cases ships at [`docker-compose.override.yml.example`](../docker-compose.override.yml.example). Copy it to `docker-compose.override.yml` and uncomment what you need. It's gitignored, so updates to Verdix never overwrite it.
+> **About `docker-compose.override.yml`:** Docker Compose automatically merges a file named `docker-compose.override.yml` with `docker-compose.yml` on every `docker compose` command; no extra flags needed. You don't need one for a standard install: `VX_SURICATA_LOG_DIR` and `VX_SURICATA_CONFIG_DIR` in `.env` already cover the NFS/SMB mount paths in Topologies 2 and 3. Create one only for a host-specific customization below (TLS-proxy CA bundle, custom GeoIP database paths) — create the file yourself and copy in the snippet from whichever section applies. It's gitignored, so updates to Verdix never overwrite it.
 
 ### Moving Docker storage to a larger disk
 
