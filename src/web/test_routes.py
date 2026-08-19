@@ -99,6 +99,14 @@ class TestLicenseGate:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+    def test_liveness_probe_reports_app_version(self):
+        from src.telemetry.models import APP_VERSION
+
+        app = _make_app(license_accepted=False)
+        client = TestClient(app, follow_redirects=False)
+        resp = client.get("/health")
+        assert resp.json()["version"] == APP_VERSION
+
     def test_post_license_accept_sets_config_and_redirects(self):
         app = _make_app(license_accepted=False)
         from src.web import deps
@@ -145,6 +153,8 @@ class TestHealthIngestionGate:
         body = resp.json()
         assert body["status"] == "red"
         assert "denied" in body["reason"]
+        from src.telemetry.models import APP_VERSION
+        assert body["version"] == APP_VERSION
 
     def test_health_returns_503_when_blocked(self):
         from src.ingestion.status import IngestionStatus
@@ -491,6 +501,14 @@ class TestQueueRoute:
         resp = client.get("/queue")
         assert resp.status_code == 200
         assert b"Alert Queue" in resp.content or b"Verdix" in resp.content
+
+    def test_queue_footer_shows_app_version(self):
+        from src.telemetry.models import APP_VERSION
+
+        app = _make_app()
+        client = _logged_in_client(app)
+        resp = client.get("/queue")
+        assert f"v{APP_VERSION}-early-access".encode() in resp.content
 
     def test_queue_window_param_accepted(self):
         app = _make_app()

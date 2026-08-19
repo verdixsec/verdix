@@ -318,3 +318,13 @@ def test_health_check_source_has_no_direct_httpx_import() -> None:
 
     source = Path(hc_module.__file__).read_text(encoding="utf-8")
     assert "import httpx" not in source
+
+
+def test_to_dict_reports_app_version() -> None:
+    """/api/health's version field is sourced from APP_VERSION, not a literal
+    duplicated here — same single-source-of-truth requirement as the UI
+    footer."""
+    from src.telemetry.models import APP_VERSION
+
+    result = HealthResult()
+    assert result.to_dict()["version"] == APP_VERSION

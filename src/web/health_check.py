@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 import psutil
 
+from src.telemetry.models import APP_VERSION
+
 if TYPE_CHECKING:
     from src.ingestion.status import IngestionStatus
 
@@ -58,6 +60,7 @@ class HealthResult:
                 for c in lst
             ]
         return {
+            "version": APP_VERSION,
             "core": items(self.core),
             "resources": items(self.resources),
             "network": items(self.network),

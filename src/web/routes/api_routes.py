@@ -42,9 +42,11 @@ async def liveness(request: Request):
     """
     status = getattr(request.app.state, "ingestion_status", None)
     if status is None or status.state != "red":
-        return JSONResponse({"status": "ok"})
+        return JSONResponse({"status": "ok", "version": APP_VERSION})
     reason = status.blocked_reason or status.last_error or "ingestion pipeline is red"
-    return JSONResponse({"status": "red", "reason": reason}, status_code=503)
+    return JSONResponse(
+        {"status": "red", "reason": reason, "version": APP_VERSION}, status_code=503
+    )
 
 
 @router.get("/api/health")

@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from src.telemetry.models import APP_VERSION
 from src.web.auth import is_authenticated, session_secret
 from src.web.deps import check_license_accepted
 
@@ -30,6 +31,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # Module-level templates instance shared by all route modules.
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# Single source of truth for the version every template's footer renders —
+# set once here rather than passed per-route, so it cannot drift out of
+# sync with APP_VERSION the way the old hardcoded literal did.
+templates.env.globals["app_version"] = APP_VERSION
 
 # Paths that bypass every middleware check (liveness probes, static files).
 _ALWAYS_OPEN = frozenset({"/health"})
