@@ -109,7 +109,6 @@ services:
     # volume, then aliases it to the local tag via `ollama cp` (manifest-only,
     # no byte copy). Peak disk during first run == model size, one copy.
     # Subsequent starts load from the volume in seconds — no network fetch.
-    # For air-gapped installs see Dockerfile.fat + docker-compose.fat.yml.
     #
     # Pinned to the v0.1.7 release build (same reasoning as the app image
     # above). This also fixes a real gap: :latest previously pointed at an

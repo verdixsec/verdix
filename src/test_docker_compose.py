@@ -12,7 +12,9 @@ import pathlib
 import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-_COMPOSE_FILES = ["docker-compose.yml", "docker-compose.fat.yml"]
+# docker-compose.fat.yml was retired (ADR-020, fat-image deployment path
+# retired) — only the lean compose file exists now.
+_COMPOSE_FILES = ["docker-compose.yml"]
 
 
 def _load(name: str) -> dict:
@@ -52,7 +54,7 @@ def test_app_healthcheck_script_is_valid_python() -> None:
         compile(script, f"<{name} healthcheck>", "exec")
 
 
-def test_restart_policy_unchanged_on_all_four_services() -> None:
+def test_restart_policy_unchanged_on_both_services() -> None:
     for name in _COMPOSE_FILES:
         doc = _load(name)
         assert doc["services"]["app"]["restart"] == "unless-stopped"
