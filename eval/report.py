@@ -91,9 +91,10 @@ def print_report(metrics: EvalMetrics, results: list[EvalResult]) -> None:
 
 
 def save_json_report(
-    metrics: EvalMetrics, results: list[EvalResult], output_path: Path
+    metrics: EvalMetrics, results: list[EvalResult], output_path: Path, prompt_version: str
 ) -> None:
     data = {
+        "prompt_version": prompt_version,
         "metrics": {
             "total": metrics.total,
             "errors": metrics.errors,

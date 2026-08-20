@@ -21,7 +21,7 @@ import click
 
 from eval.corpus.loader import load_corpus
 from eval.corpus.schema import CorpusEntry, EvalResult
-from eval.pipeline import evaluate_entry
+from eval.pipeline import PROMPT_VERSION, evaluate_entry
 from eval.report import print_report, save_json_report
 from eval.scoring import compute_metrics
 from src.infra.logging import configure_logging
@@ -158,7 +158,7 @@ def main(
     print_report(metrics, results)
 
     if output:
-        save_json_report(metrics, results, output)
+        save_json_report(metrics, results, output, prompt_version=PROMPT_VERSION)
 
     # Exit 1 if below ship bar
     if metrics.verdict_accuracy < 0.80 or metrics.false_negative_rate > 0.05:

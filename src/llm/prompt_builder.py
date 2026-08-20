@@ -28,7 +28,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from src.enrichment.models import EnrichmentResult, EnrichmentStatus, Indicator, IndicatorType
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-_DEFAULT_VERSION = "verdict_v3"
+_DEFAULT_VERSION = "verdict_v5"
 
 
 def build_enrichment_context(
@@ -36,25 +36,47 @@ def build_enrichment_context(
 ) -> list[dict[str, Any]]:
     """Convert (Indicator, EnrichmentResult) pairs to template-friendly dicts.
 
-    Each dict in the returned list has:
-      type          — "ip" | "domain" | "hash" | "url"
-      indicator     — the indicator value
-      source        — "VirusTotal" | "GeoIP" | "RDAP" etc.
-      status        — "contributed" | "failing" | "not_configured"
-      label         — human-readable verdict (computed from VT stats)
-      vt_malicious  — int (VT contributed results only)
-      vt_total      — int (VT contributed results only)
-      summary       — one-line summary from EnrichmentResult.summary
-      cached        — bool
-      cache_age_seconds — int | None
-      failure_reason — str | None (failing status only)
+    The model sees successful lookups only: a source that was never configured
+    or that failed contributes no information, so it is dropped from the
+    returned list entirely, not shown as a ledger entry. (The UI enrichment
+    ledger is unaffected — it is built separately from the raw
+    (Indicator, EnrichmentResult) pairs in _build_evidence_chain(), not from
+    this function's output.)
 
-    Items with NOT_CONFIGURED status are included in the list — the template
-    uses them for the enrichment-source ledger while omitting them from the
-    TI-hits section.
+    Every dict in the returned list has:
+      type      — "ip" | "domain" | "hash" | "url"
+      indicator — the indicator value
+      source    — "VirusTotal" | "GeoIP" | "RDAP" etc.
+      status    — "contributed" (the only status that ever reaches this list)
+      summary   — one-line summary from EnrichmentResult.summary
+      cached    — bool
+      cache_age_seconds — int | None
+
+    Additional fields are source-specific and added by an explicit per-source
+    formatter (see _SOURCE_FIELD_FORMATTERS) — a source with no formatter gets
+    no extra fields and renders from `summary` alone. This is deliberate: a
+    newly added source (MISP, etc.) does not inherit VirusTotal's field shape
+    by default. Only "virustotal" currently has one, adding:
+      vt_malicious — int, real vendor count
+      vt_total     — int, real engine count queried (0 means no analysis, see below)
+      label        — human-readable verdict, present only when vt_total > 0
+      vt_no_analysis_text — str, present only when vt_total == 0 — VT answered
+                     but has no analysis to report (not-in-database or an
+                     empty scan-stats payload). Never render vt_malicious/
+                     vt_total as a count in this case — "0/0" reads as
+                     engines-consulted-and-clean, which is false.
+      vt_cache_age — str | absent — short clause, only when cached is True
+
+    NOTE for maintainers: the non-CONTRIBUTED filter below is why
+    verdict_v5.j2's "Enrichment source status" ledger block is intentionally
+    unreachable — see the comment at that block for the byte-parity reason
+    it is kept anyway. If you change this filter, that comment goes stale.
     """
     context = []
     for indicator, result in results:
+        if result.status is not EnrichmentStatus.CONTRIBUTED:
+            continue
+
         item: dict[str, Any] = {
             "type": indicator.type.value,
             "indicator": indicator.value,
@@ -63,15 +85,11 @@ def build_enrichment_context(
             "summary": result.summary,
             "cached": result.cached,
             "cache_age_seconds": result.cache_age_seconds,
-            "failure_reason": result.failure_reason.value if result.failure_reason else None,
         }
 
-        if result.status is EnrichmentStatus.CONTRIBUTED and result.data:
-            malicious = result.data.get("malicious_count", 0)
-            total = result.data.get("total_engines", 0)
-            item["vt_malicious"] = malicious
-            item["vt_total"] = total
-            item["label"] = _vt_label(malicious, total, result.data)
+        formatter = _SOURCE_FIELD_FORMATTERS.get(result.source.lower())
+        if formatter is not None:
+            item.update(formatter(result))
 
         context.append(item)
     return context
@@ -166,13 +184,68 @@ def _source_display(source: str) -> str:
     return _DISPLAY.get(source.lower(), source)
 
 
-def _vt_label(malicious: int, total: int, data: dict) -> str:
-    if data.get("not_in_database"):
-        return "Not in VirusTotal database"
-    if total == 0:
-        return "No scan data"
+def _vt_label(malicious: int, total: int) -> str:
+    """Classify a genuine count. Only called when total > 0 — see _vt_no_analysis_text
+    for the total == 0 case, which is not a count and must not be routed here."""
     if malicious >= 10:
         return f"Confirmed malicious — {malicious}/{total} vendors"
     if malicious > 0:
         return f"Suspicious — {malicious}/{total} vendors"
     return f"Clean — 0/{total} vendors, no detections"
+
+
+def _vt_no_analysis_text(data: dict) -> str:
+    """VT answered but has no analysis to report — total_engines == 0.
+
+    not_in_database (the 404/never-indexed path) and an empty
+    last_analysis_stats payload (a 200 response with nothing to report) are
+    the same underlying situation from the model's perspective: no engines
+    consulted, no verdict to report. Neither may render as an n/m count —
+    "0/0 vendors flagged malicious" reads as engines-consulted-and-clean,
+    which is the false-exculpatory reading that produced the Spamhaus
+    likely_fp misfire. The two cases stay distinguishable in wording only
+    because the data lets us name which one occurred.
+    """
+    if data.get("not_in_database"):
+        return "Not in VirusTotal's database — no analysis data returned."
+    return "VirusTotal returned no analysis data for this indicator."
+
+
+def _cache_age_clause(seconds: int) -> str:
+    """Short, factual cache-age clause for the prompt, e.g. '3h old', '9d old'."""
+    if seconds < 60:
+        return f"{seconds}s old"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m old"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h old"
+    days = hours // 24
+    return f"{days}d old"
+
+
+def _format_virustotal_fields(result: EnrichmentResult) -> dict[str, Any]:
+    """VT-specific prompt fields: real vendor counts, never a fabricated 0/0."""
+    data = result.data or {}
+    malicious = data.get("malicious_count", 0)
+    total = data.get("total_engines", 0)
+    fields: dict[str, Any] = {
+        "vt_malicious": malicious,
+        "vt_total": total,
+    }
+    if total > 0:
+        fields["label"] = _vt_label(malicious, total)
+    else:
+        fields["vt_no_analysis_text"] = _vt_no_analysis_text(data)
+    if result.cached and result.cache_age_seconds is not None:
+        fields["vt_cache_age"] = _cache_age_clause(result.cache_age_seconds)
+    return fields
+
+
+# Explicit per-source opt-in for extra template fields. A source with no entry
+# here renders from `summary` alone — it does not inherit another source's
+# field shape. See build_enrichment_context()'s docstring.
+_SOURCE_FIELD_FORMATTERS: dict[str, Any] = {
+    "virustotal": _format_virustotal_fields,
+}

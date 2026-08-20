@@ -51,14 +51,18 @@ TLS Subject : {{ alert.tls.subject }}
 {% if contributed %}
 {% for item in contributed %}
 [{{ item.type | upper }}: {{ item.indicator }}] via {{ item.source }}
-  Classification : {{ item.label }}
+{% if item.source == "VirusTotal" %}{% if item.vt_total > 0 %}  Classification : {{ item.label }}
   VirusTotal     : {{ item.vt_malicious }}/{{ item.vt_total }} vendors flagged malicious
-{% if item.cached %}  (cached result, {{ item.cache_age_seconds }}s old){% endif %}
+{% if item.cached %}  (cached result, {{ item.vt_cache_age }}){% endif %}
+{% else %}  VirusTotal     : {{ item.vt_no_analysis_text }}
+{% endif -%}
+{% else %}  {{ item.summary }}
+{% endif -%}
 {% endfor %}
 {% else %}
 No threat intelligence hits for indicators in this alert.
 {% endif %}
-{% set non_contributed = enrichment_context | rejectattr("status", "equalto", "contributed") | list %}
+{% set non_contributed = enrichment_context | rejectattr("status", "equalto", "contributed") | list %}{# UNREACHABLE: build_enrichment_context() (src/llm/prompt_builder.py) only ever returns CONTRIBUTED items, so non_contributed is always empty. This block is kept, permanently unfired, so eval prompts stay byte-identical to verdict_v3. See the matching note in build_enrichment_context()'s docstring before removing this — only safe at the next intentional re-baseline. #}
 {% if non_contributed %}
 
 Enrichment source status:

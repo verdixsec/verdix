@@ -6,7 +6,13 @@ from __future__ import annotations
 import pytest
 
 from src.enrichment.maxmind.client import _SOURCE as _GEOIP_SOURCE
-from src.enrichment.models import EnrichmentResult, EnrichmentStatus, Indicator, IndicatorType
+from src.enrichment.models import (
+    EnrichmentResult,
+    EnrichmentStatus,
+    FailureReason,
+    Indicator,
+    IndicatorType,
+)
 from src.enrichment.rdap.client import _SOURCE as _RDAP_SOURCE
 from src.enrichment.virustotal.client import _SOURCE as _VT_SOURCE
 from src.llm.prompt_builder import (
@@ -60,6 +66,39 @@ def vt_not_configured_result() -> EnrichmentResult:
     return EnrichmentResult.not_configured("virustotal")
 
 
+@pytest.fixture()
+def geoip_public_ip_result() -> EnrichmentResult:
+    """Real shape from src/enrichment/maxmind/client.py — a public IP with ASN data."""
+    return EnrichmentResult(
+        source="geoip",
+        status=EnrichmentStatus.CONTRIBUTED,
+        data={
+            "country_code": "LU",
+            "country_name": "Luxembourg",
+            "asn": 205759,
+            "asn_org": "Ghostly Networks LLC",
+        },
+        summary="LU, AS205759 Ghostly Networks LLC",
+        failure_reason=None,
+        failure_detail=None,
+        last_success_at=None,
+    )
+
+
+@pytest.fixture()
+def geoip_private_ip_result() -> EnrichmentResult:
+    """Real shape from src/enrichment/maxmind/client.py — the "Private IP" branch."""
+    return EnrichmentResult(
+        source="geoip",
+        status=EnrichmentStatus.CONTRIBUTED,
+        data={"note": "private_ip"},
+        summary="Private IP",
+        failure_reason=None,
+        failure_detail=None,
+        last_success_at=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # build_enrichment_context
 # ---------------------------------------------------------------------------
@@ -78,14 +117,36 @@ class TestBuildEnrichmentContext:
         assert item["vt_total"] == 72
         assert "malicious" in item["label"].lower()
 
-    def test_not_configured_included_without_vt_fields(self, vt_not_configured_result):
+    def test_vt_not_configured_omitted_entirely(self, vt_not_configured_result):
+        """Decision table: VT NOT_CONFIGURED -> omit entirely, not a ledger entry.
+
+        The model sees successful lookups only. A source that was never
+        configured contributes no information and must not appear at all.
+        """
         indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
         ctx = build_enrichment_context([(indicator, vt_not_configured_result)])
-        assert len(ctx) == 1
-        item = ctx[0]
-        assert item["status"] == "not_configured"
-        assert "vt_malicious" not in item
-        assert "vt_total" not in item
+        assert ctx == []
+
+    def test_vt_failing_omitted_entirely(self):
+        """Decision table: VT FAILING -> omit entirely, no failure_reason, no mention."""
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult.failing(
+            "virustotal", FailureReason.RATE_LIMITED, "VT rate limit hit"
+        )
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx == []
+
+    def test_geoip_not_configured_omitted_entirely(self):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult.not_configured("geoip")
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx == []
+
+    def test_geoip_failing_omitted_entirely(self):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult.failing("geoip", FailureReason.OTHER, "mmdb read error")
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx == []
 
     def test_cached_result_sets_cache_fields(self, vt_contributed_result):
         vt_contributed_result.cached = True
@@ -129,7 +190,15 @@ class TestBuildEnrichmentContext:
         ctx = build_enrichment_context([(indicator, result)])
         assert "suspicious" in ctx[0]["label"].lower()
 
-    def test_vt_label_not_in_database(self):
+    # -----------------------------------------------------------------
+    # "VT answered but has no analysis to report" — never a count.
+    # not_in_database (404/never-indexed) and an empty last_analysis_stats
+    # payload (a 200 with nothing to report) are the same underlying
+    # situation and both must render an explicit no-analysis statement,
+    # never an n/m count. Distinguishable in wording only.
+    # -----------------------------------------------------------------
+
+    def test_vt_not_in_database_has_no_analysis_text_not_a_count(self):
         result = EnrichmentResult(
             source="virustotal",
             status=EnrichmentStatus.CONTRIBUTED,
@@ -141,17 +210,243 @@ class TestBuildEnrichmentContext:
         )
         indicator = Indicator(type=IndicatorType.DOMAIN, value="newdomain.xyz")
         ctx = build_enrichment_context([(indicator, result)])
-        assert "not in virustotal" in ctx[0]["label"].lower()
+        item = ctx[0]
+        assert "label" not in item
+        assert item["vt_total"] == 0
+        assert (
+            item["vt_no_analysis_text"]
+            == "Not in VirusTotal's database — no analysis data returned."
+        )
 
-    def test_multiple_indicators(self, vt_contributed_result, vt_not_configured_result):
+    def test_vt_empty_stats_has_no_analysis_text_not_a_count(self):
+        """A genuine CONTRIBUTED result with empty scan stats and no
+        not_in_database flag — the case flagged rather than invented against
+        in the prior pass. Same rule applies: never a count."""
+        result = EnrichmentResult(
+            source="virustotal",
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={
+                "malicious_count": 0,
+                "suspicious_count": 0,
+                "total_engines": 0,
+                "reputation": None,
+                "last_analysis_stats": {},
+            },
+            summary="no scan stats",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+        )
+        indicator = Indicator(type=IndicatorType.IP, value="9.9.9.9")
+        ctx = build_enrichment_context([(indicator, result)])
+        item = ctx[0]
+        assert "label" not in item
+        assert item["vt_total"] == 0
+        assert (
+            item["vt_no_analysis_text"]
+            == "VirusTotal returned no analysis data for this indicator."
+        )
+
+    def test_vt_no_analysis_cases_are_distinguishable(self):
+        not_in_db = EnrichmentResult(
+            source="virustotal",
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={"malicious_count": 0, "total_engines": 0, "not_in_database": True},
+            summary="x",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+        )
+        empty_stats = EnrichmentResult(
+            source="virustotal",
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={"malicious_count": 0, "total_engines": 0},
+            summary="x",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+        )
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        ctx_not_in_db = build_enrichment_context([(indicator, not_in_db)])
+        ctx_empty_stats = build_enrichment_context([(indicator, empty_stats)])
+        assert (
+            ctx_not_in_db[0]["vt_no_analysis_text"]
+            != ctx_empty_stats[0]["vt_no_analysis_text"]
+        )
+
+    def test_multiple_indicators_drops_non_contributed(
+        self, vt_contributed_result, vt_not_configured_result
+    ):
+        """Only the contributed result survives; the not-configured one is dropped."""
         pairs = [
             (Indicator(type=IndicatorType.IP, value="1.1.1.1"), vt_contributed_result),
             (Indicator(type=IndicatorType.DOMAIN, value="evil.example"), vt_not_configured_result),
         ]
         ctx = build_enrichment_context(pairs)
-        assert len(ctx) == 2
+        assert len(ctx) == 1
         assert ctx[0]["status"] == "contributed"
-        assert ctx[1]["status"] == "not_configured"
+        assert ctx[0]["indicator"] == "1.1.1.1"
+
+    # -----------------------------------------------------------------
+    # GeoIP is source-aware: never receives VirusTotal's field shape.
+    # Regression test for the v0.1.6 defect — a GeoIP CONTRIBUTED result
+    # (public or private IP) must never produce vt_malicious/vt_total/label.
+    # -----------------------------------------------------------------
+
+    def test_geoip_contributed_public_ip_has_no_vt_fields(self, geoip_public_ip_result):
+        indicator = Indicator(type=IndicatorType.IP, value="64.89.161.173")
+        ctx = build_enrichment_context([(indicator, geoip_public_ip_result)])
+        assert len(ctx) == 1
+        item = ctx[0]
+        assert item["source"] == "GeoIP"
+        assert item["status"] == "contributed"
+        assert item["summary"] == "LU, AS205759 Ghostly Networks LLC"
+        assert "vt_malicious" not in item
+        assert "vt_total" not in item
+        assert "label" not in item
+        assert "vt_cache_age" not in item
+
+    def test_geoip_contributed_private_ip_has_no_vt_fields(self, geoip_private_ip_result):
+        indicator = Indicator(type=IndicatorType.IP, value="172.16.1.101")
+        ctx = build_enrichment_context([(indicator, geoip_private_ip_result)])
+        assert len(ctx) == 1
+        item = ctx[0]
+        assert item["source"] == "GeoIP"
+        assert item["status"] == "contributed"
+        assert item["summary"] == "Private IP"
+        assert "vt_malicious" not in item
+        assert "vt_total" not in item
+        assert "label" not in item
+
+    def test_source_field_formatters_registry_is_virustotal_only(self):
+        """A future source (MISP, etc.) does not inherit VT's field shape by default.
+
+        The registry is the single place that opts a source into extra fields.
+        """
+        from src.llm.prompt_builder import _SOURCE_FIELD_FORMATTERS
+
+        assert list(_SOURCE_FIELD_FORMATTERS.keys()) == ["virustotal"]
+
+    # -----------------------------------------------------------------
+    # A clean VT result is evidence: real denominator, never a fabricated 0/0.
+    # -----------------------------------------------------------------
+
+    def test_clean_vt_result_keeps_real_denominator(self):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult(
+            source="virustotal",
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={"malicious_count": 0, "total_engines": 89},
+            summary="0/89 vendors flagged",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+        )
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx[0]["vt_malicious"] == 0
+        assert ctx[0]["vt_total"] == 89
+
+    # -----------------------------------------------------------------
+    # Cache age: a short, factual clause alongside the VT count.
+    # -----------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (30, "30s old"),
+            (90, "1m old"),
+            (3661, "1h old"),
+            (604800, "7d old"),
+        ],
+    )
+    def test_vt_cache_age_clause_scales_to_unit(self, seconds, expected):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        result = EnrichmentResult(
+            source="virustotal",
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={"malicious_count": 0, "total_engines": 89},
+            summary="0/89 vendors flagged",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+            cached=True,
+            cache_age_seconds=seconds,
+        )
+        ctx = build_enrichment_context([(indicator, result)])
+        assert ctx[0]["vt_cache_age"] == expected
+
+    def test_vt_not_cached_has_no_cache_age_field(self, vt_contributed_result):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        ctx = build_enrichment_context([(indicator, vt_contributed_result)])
+        assert "vt_cache_age" not in ctx[0]
+
+    # -----------------------------------------------------------------
+    # Guarantee that makes verdict_v5.j2's dead "Enrichment source status"
+    # ledger scaffold safe to keep unreachable: build_enrichment_context()
+    # never returns anything but CONTRIBUTED items. If this test breaks, the
+    # scaffold (see the comment at that block in verdict_v5.j2) starts firing
+    # for real, not as inert dead code.
+    # -----------------------------------------------------------------
+
+    def test_non_contributed_never_returned_across_full_decision_table(
+        self, geoip_public_ip_result, geoip_private_ip_result
+    ):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        pairs = [
+            # VT: contributed with a real count, contributed with no analysis
+            # (both sub-cases), not-configured, failing.
+            (
+                indicator,
+                EnrichmentResult(
+                    source="virustotal",
+                    status=EnrichmentStatus.CONTRIBUTED,
+                    data={"malicious_count": 15, "total_engines": 72},
+                    summary="15/72",
+                    failure_reason=None,
+                    failure_detail=None,
+                    last_success_at=None,
+                ),
+            ),
+            (
+                indicator,
+                EnrichmentResult(
+                    source="virustotal",
+                    status=EnrichmentStatus.CONTRIBUTED,
+                    data={"malicious_count": 0, "total_engines": 0, "not_in_database": True},
+                    summary="not in db",
+                    failure_reason=None,
+                    failure_detail=None,
+                    last_success_at=None,
+                ),
+            ),
+            (
+                indicator,
+                EnrichmentResult(
+                    source="virustotal",
+                    status=EnrichmentStatus.CONTRIBUTED,
+                    data={"malicious_count": 0, "total_engines": 0},
+                    summary="no stats",
+                    failure_reason=None,
+                    failure_detail=None,
+                    last_success_at=None,
+                ),
+            ),
+            (indicator, EnrichmentResult.not_configured("virustotal")),
+            (indicator, EnrichmentResult.failing("virustotal", FailureReason.OTHER, "x")),
+            # GeoIP: contributed (public), contributed (private), not-configured, failing.
+            (indicator, geoip_public_ip_result),
+            (indicator, geoip_private_ip_result),
+            (indicator, EnrichmentResult.not_configured("geoip")),
+            (indicator, EnrichmentResult.failing("geoip", FailureReason.OTHER, "x")),
+        ]
+
+        ctx = build_enrichment_context(pairs)
+
+        # Replicates verdict_v5.j2's `rejectattr("status", "equalto", "contributed")`.
+        non_contributed = [item for item in ctx if item["status"] != "contributed"]
+        assert non_contributed == []
+        assert all(item["status"] == "contributed" for item in ctx)
+        assert len(ctx) == 5  # the 5 genuinely CONTRIBUTED pairs above
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +472,19 @@ class TestSourceDisplay:
         ],
     )
     def test_live_source_key_has_display_name(self, source_key):
+        # NOT_CONFIGURED is filtered out entirely (decision table), so this
+        # must exercise a CONTRIBUTED result to reach _source_display() via
+        # the real production function.
         indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
-        result = EnrichmentResult.not_configured(source_key)
+        result = EnrichmentResult(
+            source=source_key,
+            status=EnrichmentStatus.CONTRIBUTED,
+            data={},
+            summary="test summary",
+            failure_reason=None,
+            failure_detail=None,
+            last_success_at=None,
+        )
         ctx = build_enrichment_context([(indicator, result)])
         assert ctx[0]["source"] != source_key, (
             f"no display name mapped for live source key {source_key!r} — "
@@ -259,23 +565,78 @@ class TestPromptBuilder:
         assert "Confirmed malicious" in prompt
         assert "15/72" in prompt
 
-    def test_not_configured_shows_ledger_entry(self, minimal_alert):
+    def test_not_configured_never_reaches_prompt(self, minimal_alert, vt_not_configured_result):
+        """Decision table: NOT_CONFIGURED is omitted entirely — no ledger, no mention.
+
+        Exercises the real production path (build_enrichment_context ->
+        PromptBuilder), not a hand-built dict, so it proves what a real
+        verdict prompt actually contains.
+        """
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        ctx = build_enrichment_context([(indicator, vt_not_configured_result)])
         builder = PromptBuilder()
-        enrichment_ctx = [
-            {
-                "type": "ip",
-                "indicator": "1.2.3.4",
-                "source": "VirusTotal",
-                "status": "not_configured",
-                "summary": None,
-                "cached": False,
-                "cache_age_seconds": None,
-                "failure_reason": None,
-            }
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+        assert "NOT_CONFIGURED" not in prompt
+        assert "No threat intelligence hits for indicators in this alert." in prompt
+
+    def test_geoip_summary_reaches_prompt_without_vt_shape(
+        self, minimal_alert, geoip_public_ip_result
+    ):
+        """Regression test: GeoIP's real summary reaches the model, source-labelled,
+        with no fabricated VirusTotal fields (the v0.1.6 defect this fixes)."""
+        indicator = Indicator(type=IndicatorType.IP, value="64.89.161.173")
+        ctx = build_enrichment_context([(indicator, geoip_public_ip_result)])
+        builder = PromptBuilder()
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+        assert "via GeoIP" in prompt
+        assert "LU, AS205759 Ghostly Networks LLC" in prompt
+        assert "via VirusTotal" not in prompt
+        assert "Classification" not in prompt
+        assert "No scan data" not in prompt
+        assert "0/0" not in prompt
+
+    def test_geoip_private_ip_summary_reaches_prompt(
+        self, minimal_alert, geoip_private_ip_result
+    ):
+        indicator = Indicator(type=IndicatorType.IP, value="172.16.1.101")
+        ctx = build_enrichment_context([(indicator, geoip_private_ip_result)])
+        builder = PromptBuilder()
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+        assert "via GeoIP" in prompt
+        assert "Private IP" in prompt
+        assert "via VirusTotal" not in prompt
+        assert "0/0" not in prompt
+
+    def test_session63_spamhaus_scenario_no_fabricated_vt_fields(
+        self,
+        minimal_alert,
+        geoip_public_ip_result,
+        geoip_private_ip_result,
+        vt_not_configured_result,
+    ):
+        """End-to-end regression for the reported defect (v0.1.6 change brief):
+
+        172.16.1.101 (private) -> 64.89.161.173 (Spamhaus DROP-listed, LU,
+        AS205759 Ghostly Networks LLC), no VT key configured. Before the fix,
+        both IPs rendered a fabricated "VirusTotal : 0/0 vendors flagged
+        malicious" / "Classification : No scan data" block from the GeoIP
+        result; the real GeoIP summaries never reached the model.
+        """
+        pairs = [
+            (Indicator(type=IndicatorType.IP, value="172.16.1.101"), geoip_private_ip_result),
+            (Indicator(type=IndicatorType.IP, value="64.89.161.173"), vt_not_configured_result),
+            (Indicator(type=IndicatorType.IP, value="64.89.161.173"), geoip_public_ip_result),
         ]
-        prompt = builder.build(alert=minimal_alert, enrichment_context=enrichment_ctx)
-        assert "NOT_CONFIGURED" in prompt
-        assert "VirusTotal" in prompt
+        ctx = build_enrichment_context(pairs)
+        builder = PromptBuilder()
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+
+        assert "LU, AS205759 Ghostly Networks LLC" in prompt
+        assert "Private IP" in prompt
+        assert "No scan data" not in prompt
+        assert "0/0 vendors flagged malicious" not in prompt
+        assert "NOT_CONFIGURED" not in prompt
+        assert "via VirusTotal" not in prompt
 
     def test_tls_sni_rendered(self, minimal_alert):
         builder = PromptBuilder()
@@ -304,7 +665,7 @@ class TestPromptBuilder:
 
     def test_prompt_version_attribute(self):
         builder = PromptBuilder()
-        assert builder.prompt_version == "verdict_v3"
+        assert builder.prompt_version == "verdict_v5"
 
     def test_custom_prompt_version_raises_on_missing_template(self):
         import jinja2
@@ -312,26 +673,21 @@ class TestPromptBuilder:
         with pytest.raises(jinja2.TemplateNotFound):
             builder.build(alert={"alert": {}, "timestamp": "x"})
 
-    def test_cached_result_shows_cache_age(self, minimal_alert):
+    def test_vt_cached_result_shows_cache_age_clause(self, minimal_alert, vt_contributed_result):
+        vt_contributed_result.cached = True
+        vt_contributed_result.cache_age_seconds = 600
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        ctx = build_enrichment_context([(indicator, vt_contributed_result)])
         builder = PromptBuilder()
-        enrichment_ctx = [
-            {
-                "type": "ip",
-                "indicator": "1.2.3.4",
-                "source": "VirusTotal",
-                "status": "contributed",
-                "label": "Confirmed malicious — 15/72 vendors",
-                "vt_malicious": 15,
-                "vt_total": 72,
-                "summary": "cached",
-                "cached": True,
-                "cache_age_seconds": 600,
-                "failure_reason": None,
-            }
-        ]
-        prompt = builder.build(alert=minimal_alert, enrichment_context=enrichment_ctx)
-        assert "cached" in prompt.lower()
-        assert "600" in prompt
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+        assert "10m old" in prompt
+
+    def test_vt_not_cached_shows_no_cache_clause(self, minimal_alert, vt_contributed_result):
+        indicator = Indicator(type=IndicatorType.IP, value="1.2.3.4")
+        ctx = build_enrichment_context([(indicator, vt_contributed_result)])
+        builder = PromptBuilder()
+        prompt = builder.build(alert=minimal_alert, enrichment_context=ctx)
+        assert "cached result" not in prompt
 
     def test_reusable_across_calls(self, minimal_alert):
         builder = PromptBuilder()

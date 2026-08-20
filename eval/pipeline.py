@@ -9,7 +9,19 @@ from eval.corpus.schema import CorpusEntry, EvalResult
 from src.interfaces.llm_provider import LLMProvider
 from src.llm.prompt_builder import PromptBuilder, eval_enrichment_context_from_hits
 
-_prompt_builder = PromptBuilder()
+# Pinned explicitly rather than inheriting PromptBuilder's _DEFAULT_VERSION, so a
+# future default-version bump in prompt_builder.py cannot silently re-point the
+# harness onto an unscored template. verdict_v5 is correct today:
+# eval/data/PROMPT_PARITY_verdict_v3_vs_verdict_v5_6a93f5d368f5.md (internal-only,
+# not shipped in this export — it records that all 327 corpus entries render
+# byte-identically under this eval path for v3 vs v5) shows ADR-015's
+# v3-measured baseline (dev 79.2% / held-out 79.25%, FNR 0%) holds unchanged at
+# v5. Advance this pin only after scripts/check_prompt_parity.py confirms parity
+# with the new version, or after a fresh baseline is measured and ADR-015 is
+# superseded — never as a silent side effect of changing prompt_builder.py's
+# _DEFAULT_VERSION.
+PROMPT_VERSION = "verdict_v5"
+_prompt_builder = PromptBuilder(prompt_version=PROMPT_VERSION)
 
 # Canonical output schema — shared with OllamaClient and GeminiClient.
 _OUTPUT_SCHEMA: dict[str, Any] = {
