@@ -98,6 +98,13 @@ from src.llm.ollama_client import OllamaClient
     "model/API default; pin to 0 for greedy/reproducible decoding. For gemini, "
     "temperature=0 also sets topK=1/topP=1 for maximally deterministic output.",
 )
+@click.option(
+    "--prompt-version",
+    default=None,
+    help="Override eval/pipeline.py's PROMPT_VERSION pin for this run only, e.g. "
+    "to score a candidate template before it becomes the pin. Omit to use the "
+    "pinned default. Flows into the saved report's prompt_version field.",
+)
 def main(
     corpus: Path,
     provider: str,
@@ -110,6 +117,7 @@ def main(
     api_key: str | None,
     timeout: float,
     temperature: float | None,
+    prompt_version: str | None,
 ) -> None:
     configure_logging("INFO")
     entries = load_corpus(corpus)
@@ -151,14 +159,19 @@ def main(
             f"Temperature: {temp_label}"
         )
 
+    effective_prompt_version = prompt_version or PROMPT_VERSION
+    if prompt_version:
+        click.echo(
+            f"Prompt version: {effective_prompt_version}  (override of pinned {PROMPT_VERSION})"
+        )
     click.echo()
-    results = asyncio.run(_evaluate_all(entries, client))
+    results = asyncio.run(_evaluate_all(entries, client, prompt_version=prompt_version))
 
     metrics = compute_metrics(results)
     print_report(metrics, results)
 
     if output:
-        save_json_report(metrics, results, output, prompt_version=PROMPT_VERSION)
+        save_json_report(metrics, results, output, prompt_version=effective_prompt_version)
 
     # Exit 1 if below ship bar
     if metrics.verdict_accuracy < 0.80 or metrics.false_negative_rate > 0.05:
@@ -168,13 +181,14 @@ def main(
 async def _evaluate_all(
     entries: list[CorpusEntry],
     client: LLMProvider,
+    prompt_version: str | None = None,
 ) -> list[EvalResult]:
     results: list[EvalResult] = []
     with click.progressbar(
         entries, label="Evaluating", item_show_func=lambda e: e.alert_id if e else ""
     ) as bar:
         for entry in bar:
-            result = await evaluate_entry(entry, client)
+            result = await evaluate_entry(entry, client, prompt_version=prompt_version)
             results.append(result)
     return results
 

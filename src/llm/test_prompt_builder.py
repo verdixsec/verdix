@@ -665,7 +665,7 @@ class TestPromptBuilder:
 
     def test_prompt_version_attribute(self):
         builder = PromptBuilder()
-        assert builder.prompt_version == "verdict_v5"
+        assert builder.prompt_version == "verdict_v6"
 
     def test_custom_prompt_version_raises_on_missing_template(self):
         import jinja2
@@ -694,3 +694,83 @@ class TestPromptBuilder:
         p1 = builder.build(alert=minimal_alert)
         p2 = builder.build(alert=minimal_alert)
         assert p1 == p2
+
+
+class TestDnsRendering:
+    """Regression tests for verdict_v6's DNS query/response fix.
+
+    verdict_v5 (and every earlier version) read the query name only from flat
+    dns.rrname, the resolved IP only from flat dns.rdata, and never referenced
+    dns.rcode. Real Suricata 8.x EVE nests the query name under
+    dns.queries[].rrname (confirmed live on the sensor host, dns.version 3),
+    and every EVE dns.version — 2 and 3 alike — nests the resolved IP under
+    dns.answers[].rdata, not dns.rdata (confirmed against the eval corpus's
+    dns.version 2 records). v5 silently drops the query name on nested-shape
+    records and always drops the resolved IP and rcode. These assertions fail
+    against verdict_v5 and pass against verdict_v6.
+    """
+
+    def test_nested_query_shape_renders_domain(self, minimal_alert):
+        """Suricata 8.x EVE dns.version 3: query name nested under dns.queries[]."""
+        builder = PromptBuilder(prompt_version="verdict_v6")
+        co_dns = {
+            "event_type": "dns",
+            "dns": {
+                "version": 3,
+                "type": "query",
+                "queries": [{"rrname": "nested-query.example.com", "rrtype": "A"}],
+            },
+        }
+        prompt = builder.build(alert=minimal_alert, correlated_events=[co_dns])
+        assert "nested-query.example.com" in prompt
+
+    def test_flat_query_shape_still_renders_domain(self, minimal_alert):
+        """dns.version 2 (eval corpus, Suricata pre-8.x): query name flat at dns.rrname."""
+        builder = PromptBuilder(prompt_version="verdict_v6")
+        co_dns = {
+            "event_type": "dns",
+            "dns": {
+                "version": 2,
+                "type": "query",
+                "rrname": "flat-query.example.com",
+                "rrtype": "A",
+            },
+        }
+        prompt = builder.build(alert=minimal_alert, correlated_events=[co_dns])
+        assert "flat-query.example.com" in prompt
+
+    def test_answer_with_records_renders_resolved_ip_and_rcode(self, minimal_alert):
+        """dns.answers[] carries the resolved IP; dns.rdata does not exist on answer records."""
+        builder = PromptBuilder(prompt_version="verdict_v6")
+        co_dns = {
+            "event_type": "dns",
+            "dns": {
+                "version": 2,
+                "type": "answer",
+                "rrname": "www.hg301d.cfd",
+                "rcode": "NOERROR",
+                "answers": [
+                    {"rrname": "www.hg301d.cfd", "rrtype": "A", "ttl": 5, "rdata": "43.154.67.170"}
+                ],
+            },
+        }
+        prompt = builder.build(alert=minimal_alert, correlated_events=[co_dns])
+        assert "www.hg301d.cfd" in prompt
+        assert "43.154.67.170" in prompt
+        assert "NOERROR" in prompt
+
+    def test_nxdomain_answer_renders_rcode(self, minimal_alert):
+        """NXDOMAIN carries no answers[]; the rcode itself is the signal and must render."""
+        builder = PromptBuilder(prompt_version="verdict_v6")
+        co_dns = {
+            "event_type": "dns",
+            "dns": {
+                "version": 2,
+                "type": "answer",
+                "rrname": "gone.example.com",
+                "rcode": "NXDOMAIN",
+            },
+        }
+        prompt = builder.build(alert=minimal_alert, correlated_events=[co_dns])
+        assert "gone.example.com" in prompt
+        assert "NXDOMAIN" in prompt

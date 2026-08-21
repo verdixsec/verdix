@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.1.8](https://img.shields.io/badge/version-v0.1.8-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.8)
+[![Version: v0.1.9](https://img.shields.io/badge/version-v0.1.9-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.9)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -86,12 +86,12 @@ Before writing any product code, we built an independent evaluation harness and 
 
 | Metric | Result |
 |---|---|
-| Verdict accuracy (development set) | **79.2%** |
-| Verdict accuracy (held-out set) | **79.25%** |
+| Verdict accuracy (development set) | **78.47%** |
+| Verdict accuracy (held-out set) | **81.13%** |
 | False-negative rate | **0.0%** |
 | Structured output reliability | **100%** |
 
-The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Accuracy was 79.2% on the development set and 79.25% on the held-out set. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
+The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Accuracy was 78.47% on the development set and 81.13% on the held-out set. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
 
 Each entry carries a fixed set of threat-intelligence labels curated when the corpus was built. Most of these PCAPs are several years old and their indicators no longer return results from live VirusTotal, so the labels come from the IOCs the PCAP authors published alongside the captures. The harness renders them into the same prompt template the product uses. It makes no live VirusTotal, RDAP, or GeoIP calls, so these figures measure verdict quality given that context rather than the enrichment pipeline itself.
 

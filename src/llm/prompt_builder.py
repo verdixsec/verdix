@@ -28,7 +28,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from src.enrichment.models import EnrichmentResult, EnrichmentStatus, Indicator, IndicatorType
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-_DEFAULT_VERSION = "verdict_v5"
+_DEFAULT_VERSION = "verdict_v6"
 
 
 def build_enrichment_context(

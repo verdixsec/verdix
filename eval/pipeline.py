@@ -11,16 +11,16 @@ from src.llm.prompt_builder import PromptBuilder, eval_enrichment_context_from_h
 
 # Pinned explicitly rather than inheriting PromptBuilder's _DEFAULT_VERSION, so a
 # future default-version bump in prompt_builder.py cannot silently re-point the
-# harness onto an unscored template. verdict_v5 is correct today:
-# eval/data/PROMPT_PARITY_verdict_v3_vs_verdict_v5_6a93f5d368f5.md (internal-only,
-# not shipped in this export — it records that all 327 corpus entries render
-# byte-identically under this eval path for v3 vs v5) shows ADR-015's
-# v3-measured baseline (dev 79.2% / held-out 79.25%, FNR 0%) holds unchanged at
-# v5. Advance this pin only after scripts/check_prompt_parity.py confirms parity
-# with the new version, or after a fresh baseline is measured and ADR-015 is
+# harness onto an unscored template. verdict_v6 is correct today: a fresh,
+# full-corpus re-baseline (eval/data/results_v6_temp0_dev.json,
+# results_v6_temp0_heldout.json — dev 78.47%/215/274, held-out 81.13%/43/53,
+# FNR 0/177) measured verdict_v6 directly, statistically indistinguishable from
+# ADR-015's v3/v5 baseline. See ADR-021, which supersedes ADR-015. Advance this
+# pin only after scripts/check_prompt_parity.py confirms parity with the new
+# version, or after a fresh baseline is measured and the current ADR is
 # superseded — never as a silent side effect of changing prompt_builder.py's
 # _DEFAULT_VERSION.
-PROMPT_VERSION = "verdict_v5"
+PROMPT_VERSION = "verdict_v6"
 _prompt_builder = PromptBuilder(prompt_version=PROMPT_VERSION)
 
 # Canonical output schema — shared with OllamaClient and GeminiClient.
@@ -42,10 +42,20 @@ _OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-async def evaluate_entry(entry: CorpusEntry, client: LLMProvider) -> EvalResult:
-    """Render prompt, call LLM, validate output, return EvalResult."""
+async def evaluate_entry(
+    entry: CorpusEntry, client: LLMProvider, prompt_version: str | None = None
+) -> EvalResult:
+    """Render prompt, call LLM, validate output, return EvalResult.
+
+    prompt_version overrides PROMPT_VERSION for this call only — for scoring a
+    candidate template before it becomes the pin. Omit to use the pinned
+    default; PROMPT_VERSION itself is untouched either way.
+    """
+    builder = (
+        _prompt_builder if prompt_version is None else PromptBuilder(prompt_version=prompt_version)
+    )
     enrichment_ctx = eval_enrichment_context_from_hits(entry.threat_intel_context)
-    prompt = _prompt_builder.build(
+    prompt = builder.build(
         alert=entry.raw_eve,
         correlated_events=entry.correlated_events,
         enrichment_context=enrichment_ctx,
@@ -55,7 +65,7 @@ async def evaluate_entry(entry: CorpusEntry, client: LLMProvider) -> EvalResult:
         response = await client.complete(
             prompt,
             _OUTPUT_SCHEMA,
-            prompt_version=_prompt_builder.prompt_version,
+            prompt_version=builder.prompt_version,
         )
         return EvalResult(
             alert_id=entry.alert_id,

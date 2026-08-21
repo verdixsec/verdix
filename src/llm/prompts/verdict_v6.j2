@@ -32,8 +32,14 @@ Timestamp   : {{ alert.timestamp }}
 {% if alert.alert.metadata %}
 Rule metadata: {{ alert.alert.metadata | tojson }}
 {% endif %}
-{% if alert.dns and alert.dns.rrname %}
-DNS query   : {{ alert.dns.type }} {{ alert.dns.rrname }}{% if alert.dns.rdata %} -> {{ alert.dns.rdata }}{% endif %}
+{% set _dns = alert.get("dns") or {} -%}
+{%- set _dns_queries = _dns.get("queries") or [] -%}
+{%- set _dns_rrname = _dns.get("rrname") or ((_dns_queries[0] or {}).get("rrname") if _dns_queries else none) -%}
+{% if _dns_rrname %}
+{%- set _dns_answers = _dns.get("answers") or [] -%}
+{%- set _dns_rdata = _dns_answers | map(attribute="rdata") | select | list -%}
+{%- set _dns_rcode = _dns.get("rcode") -%}
+DNS query   : {{ _dns.get("type") or "query" }} {{ _dns_rrname }}{% if _dns_rdata %} -> {{ _dns_rdata | join(", ") }}{% endif %}{% if _dns_rcode %} [{{ _dns_rcode }}]{% endif %}
 {% endif %}
 {% if alert.http %}
 HTTP        : {{ alert.http.http_method }} {{ alert.http.hostname }}{{ alert.http.url }}
@@ -77,7 +83,7 @@ Enrichment source status:
 {% if correlated_events %}
 {% for ev in correlated_events %}
 [{{ ev.event_type }}]
-{% if ev.event_type == "dns" %}  {{ ev.dns.type }}: {{ ev.dns.rrname }}{% if ev.dns.rdata %} -> {{ ev.dns.rdata }}{% endif %}{% endif %}
+{% if ev.event_type == "dns" %}{% set _ev_dns = ev.get("dns") or {} %}{% set _ev_dns_queries = _ev_dns.get("queries") or [] %}{% set _ev_dns_rrname = _ev_dns.get("rrname") or ((_ev_dns_queries[0] or {}).get("rrname") if _ev_dns_queries else none) %}{% set _ev_dns_answers = _ev_dns.get("answers") or [] %}{% set _ev_dns_rdata = _ev_dns_answers | map(attribute="rdata") | select | list %}{% set _ev_dns_rcode = _ev_dns.get("rcode") %}  {{ _ev_dns.get("type") or "dns" }}: {{ _ev_dns_rrname }}{% if _ev_dns_rdata %} -> {{ _ev_dns_rdata | join(", ") }}{% endif %}{% if _ev_dns_rcode %} [{{ _ev_dns_rcode }}]{% endif %}{% endif %}
 {% if ev.event_type == "http" %}  {{ ev.http.http_method }} {{ ev.http.hostname }}{{ ev.http.url }} ({{ ev.http.status }}){% endif %}
 {% if ev.event_type == "tls" %}  SNI={{ ev.tls.sni }} subject={{ ev.tls.subject }}{% endif %}
 {% if ev.event_type == "flow" %}  {{ ev.proto }} {{ ev.src_ip }}:{{ ev.src_port }} -> {{ ev.dest_ip }}:{{ ev.dest_port }} bytes_toserver={{ ev.flow.bytes_toserver }} bytes_toclient={{ ev.flow.bytes_toclient }}{% endif %}
