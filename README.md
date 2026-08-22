@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.1.9](https://img.shields.io/badge/version-v0.1.9-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.1.9)
+[![Version: v0.2.0](https://img.shields.io/badge/version-v0.2.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.2.0)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -52,6 +52,12 @@ You accept the verdict or override it. Verdix never takes action on an alert aut
 **Capacity.** Verdix analyzes up to 300 alerts per day. Beyond that, alerts are stored and shown in the queue marked deferred, and do not receive a verdict. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for how the limit is counted and how to raise it.
 
 Disk space splits across two locations: Docker's image store and the model volume. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for the breakdown and what to do if you relocate Docker storage.
+
+---
+
+## Try it in an hour
+
+No Suricata deployment yet? [QUICKSTART.md](QUICKSTART.md) installs Suricata and Verdix on one throwaway Ubuntu box and walks you to a populated queue of verdicts on a public malware capture. Plan for 8 CPU cores, 30 GB RAM, and a ~22 GB image pull.
 
 ---
 

@@ -1,6 +1,6 @@
 # Verdix — Deployment Guide
 
-> **Last updated:** 2026-08-09
+> **Last updated:** 2026-08-21
 
 Verdix needs direct access to Suricata's `eve.json`. The topology you need is determined by one question: **where is Suricata running relative to this host?** Same machine, separate Linux host, or Windows host/NAS. Pick the matching section below.
 
@@ -12,13 +12,19 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 
 - A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, Fedora (current release, or the previous release), or equivalent
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
-- Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server
+- Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server. No Suricata yet? [QUICKSTART.md](../QUICKSTART.md) installs Suricata and Verdix on one host and walks you to a populated queue using a public malware capture.
 - **32 GB RAM minimum**: the LLM runs in the sibling `llm` container, not in-process with the app. The 32 GB minimum covers both containers on one host
 - **60 GB free disk space**, split across two locations that land on different filesystems if you relocate Docker storage. Measured on a clean single-partition install: ~12 GB base OS + ~33 GB after Verdix (images + volumes) — a 40 GB box lands inside the app's own low-disk warning band on first boot, so 60 GB is the real recommendation:
   - **Images** (Docker's image/layer store, `/var/lib/containerd` when the containerd image store is in use): ~11 GB actual. The LLM runtime image bundles Ollama's CUDA/ROCm runtime and is ~10.6 GB of that on its own; the app image is ~0.4 GB. Budget **15 GB minimum, 20 GB recommended** here.
   - **Volumes** (Docker's data-root): ~12 GB actual. The `verdix_models` volume holds the ~11 GB Gemma model; `verdix_data` (database, GeoIP files, enrichment cache) is small but grows over time. Budget **15 GB minimum, 20 GB recommended** here.
 
   If you relocate Docker storage so images and volumes land on different disks, check each location separately using the per-location budgets above; the combined 60 GB figure only applies to the default, nothing-relocated case. See the note below.
+
+  Check free space where Docker actually stores data, not `df -h /` — they're often different filesystems:
+  ```bash
+  docker info --format '{{.DockerRootDir}}'
+  df -h "$(docker info --format '{{.DockerRootDir}}')"
+  ```
 
   The app's own health check (Setup screen and `/api/health`) only monitors the volumes location (15 GB min / 20 GB recommended), since it runs inside the app container, which has no visibility into Docker's image store. A green health check does not by itself confirm the images location has enough room; check that side manually before you install if you're unsure.
 - **16 cores is the reference configuration; no GPU required.** Verdix admits up to 300 alerts per day; see Daily capacity below.
