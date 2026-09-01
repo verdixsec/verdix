@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Dillon Jayanthan
-# Verdix v0.1
+# Verdix
 #
 # Quick start:
 #   1. Copy example.env to .env and fill in your values.
@@ -18,11 +18,11 @@
 services:
 
   app:
-    # Pinned to the v0.2.0 release build — the shipped compose file never
+    # Pinned to the v0.3.0 release build — the shipped compose file never
     # tracks :latest, so an install today and an install next month pull the
     # same bytes. CI moves :latest on every successful build; use that for
     # local dev only, never here.
-    image: ghcr.io/verdixsec/verdix/app:0.2.0
+    image: ghcr.io/verdixsec/verdix/app:0.3.0
     restart: unless-stopped
     depends_on:
       llm:
@@ -110,24 +110,24 @@ services:
     # no byte copy). Peak disk during first run == model size, one copy.
     # Subsequent starts load from the volume in seconds — no network fetch.
     #
-    # Pinned to the v0.2.0 release build (same reasoning as the app image
+    # Pinned to the v0.3.0 release build (same reasoning as the app image
     # above). This also fixes a real gap: :latest previously pointed at an
     # image built 2026-06-18, two days before the lean re-architecture even
     # started, and as of this pin that tag no longer resolves at all (the
     # version behind it was removed from ghcr). The image validated in the
     # 2026-06-21 field test lives under a different tag entirely (lean-rc1).
     # Never let this drift back to a floating tag.
-    image: ghcr.io/verdixsec/verdix/llm:0.2.0
+    image: ghcr.io/verdixsec/verdix/llm:0.3.0
     restart: unless-stopped
     volumes:
       - verdix_models:/root/.ollama
     healthcheck:
       # Greps for the specific model tag, not just "is ollama serve up" —
       # `ollama list` returns exit 0 with zero models loaded, which would
-      # otherwise report Healthy while the first-run GGUF pull/import is
-      # still in progress. start_period is generous to cover first-run oras
-      # pull + ollama create (can take 20-40 min on slow links). Steady-state
-      # restarts are healthy within ~30 s (model already in volume).
+      # otherwise report Healthy while the first-run native `ollama pull` is
+      # still in progress. start_period is generous to cover that first-run
+      # pull (can take 20-40 min on slow links). Steady-state restarts are
+      # healthy within ~30 s (model already in volume).
       test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q 'gemma4:e4b-it-q8_0'"]
       interval: 10s
       timeout: 5s

@@ -8,10 +8,16 @@ Docker (e.g. eval harness: http://localhost:11434/api/chat).
 
 Uses Ollama's structured output (format="json" + JSON schema) and requests
 num_ctx=8192 — Ollama's default of 4096 is insufficient for complex alerts.
+Sends think=false: measured on ramon (docs/progress.md session 73, continued)
+at 79% shorter generation time with an identical decode rate, category verdict
+unaffected across all sampled runs.
 
-Retry logic: up to 3 attempts on parse failure, with a corrective follow-up
-prompt on each retry. Tracks first_attempt_valid and total attempts for
-structured-output reliability metrics (target: >99% valid on first attempt).
+Retry logic: up to 2 attempts total on parse failure, with a corrective
+follow-up prompt on the retry. A read timeout is never retried (no response
+was returned to correct, and a second attempt at VX_OLLAMA_TIMEOUT_SECONDS
+doubles the worst-case wall clock for nothing). Tracks first_attempt_valid
+and total attempts for structured-output reliability metrics (target: >99%
+valid on first attempt).
 """
 from __future__ import annotations
 
@@ -20,12 +26,14 @@ import time
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 
 from src.infra.http.factory import create_http_client
 from src.llm.models import LLMResponse, VerdictOutput
 
 _DEFAULT_BASE_URL = "http://llm:11434/api/chat"
 _DEFAULT_MODEL = "gemma4:e4b-it-q8_0"
+_MAX_ATTEMPTS = 2
 
 # Set VX_LOG_LLM_PROMPTS=1 in .env to emit the full prompt and raw LLM response
 # to stdout at INFO level — useful for debugging prompt truncation / quality issues.
@@ -53,6 +61,74 @@ _OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["verdict_category", "confidence_score", "reasoning", "contributing_facts"],
 }
 
+# Corrective follow-up prompt sent on the one retry, when the first response
+# failed JSON/schema validation. Kept as fixed literal strings (only the
+# 200-char failure preview is interpolated) so a later edit can't silently
+# weaken the wording without a test noticing.
+_CORRECTIVE_PREAMBLE = (
+    "Your previous response could not be parsed as valid JSON matching the "
+    "required schema. It started with: "
+)
+_CORRECTIVE_SCHEMA_RESTATEMENT = (
+    "\n\nReturn ONLY a single JSON object with exactly these fields:\n"
+    '- verdict_category: string, one of "likely_fp", "suspicious_investigate", "likely_tp"\n'
+    "- confidence_score: number between 0.0 and 1.0\n"
+    "- reasoning: a concise string (a few sentences, not a full essay)\n"
+    "- contributing_facts: a concise array of short strings\n"
+    "No preamble, no markdown fences, no text outside the JSON object."
+)
+
+
+def _build_corrective_prompt(original_prompt: str, failed_raw: str) -> str:
+    """Build the retry prompt after a JSON/schema validation failure.
+
+    Appends only a 200-char preview of the failed response, not the full
+    text — this is a deliberate context-budget control against num_ctx=8192,
+    not an artifact of the single-turn shape. See ADR discussion in the
+    session that introduced this: reworking into a genuine multi-turn
+    payload would require a token-aware cap of its own; the character slice
+    already does that job.
+    """
+    preview = failed_raw[:200]
+    return f"{original_prompt}\n\n{_CORRECTIVE_PREAMBLE}{preview}{_CORRECTIVE_SCHEMA_RESTATEMENT}"
+
+
+def _classify_request_exception(exc: Exception) -> tuple[str, bool]:
+    """Classify an exception raised while calling Ollama, without importing
+    httpx directly (ruff TID251 bans it outside src/infra/http/ — matches the
+    qualname-substring pattern already used in
+    src/enrichment/virustotal/client.py:_fetch).
+
+    Returns (failure_class, retryable).
+    """
+    etype = type(exc).__qualname__
+
+    if "Timeout" in etype:
+        # ReadTimeout / ConnectTimeout / WriteTimeout / PoolTimeout /
+        # TimeoutException: no response came back to correct against, and a
+        # second attempt costs another full VX_OLLAMA_TIMEOUT_SECONDS window.
+        return "read_timeout", False
+
+    if "ConnectError" in etype:
+        # Transient -- e.g. the llm container restarting.
+        return "connect_error", True
+
+    if "HTTPStatusError" in etype:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        # 503: Ollama still starting up -- transient, worth the one retry.
+        # Anything else (in particular 500): a real server-side defect, not a
+        # transient condition -- session 70 saw 22+ consecutive HTTP 500s from
+        # a memory-discovery bug where retrying never succeeded and only
+        # doubled time-to-diagnosis. Fail immediately instead.
+        return "http_error", status_code == 503
+
+    # Anything not explicitly classified above (KeyError from an unexpected
+    # response shape, a raw JSON decode failure on the outer HTTP body, other
+    # httpx transport errors). Retryable, matching the prior blanket-catch
+    # behaviour for the genuinely-unanticipated case -- but always logged, per
+    # "keep a final except Exception fallback, but make it the last branch."
+    return "unclassified", True
+
 
 class OllamaClient:
     """Async client around Ollama /api/chat — implements LLMProvider.
@@ -71,6 +147,13 @@ class OllamaClient:
                   verdicts (matching the validated temp=0 baseline), and the
                   eval harness passes temperature=0 for greedy/reproducible
                   decoding.
+        num_thread: Optional Ollama thread-pool size. Default None leaves the
+                  key out of the request options, so Ollama sizes the pool from
+                  the host's visible physical cores -- which collapses
+                  throughput on any host where the allowed CPUs (cgroup mask,
+                  Docker --cpus, k8s limit) are fewer than the visible core
+                  count (PROGRESS.md item 45). Pass the host's actual allowed
+                  core count explicitly on such a host (ramon: 16, item 47).
     """
 
     OUTPUT_SCHEMA: dict[str, Any] = _OUTPUT_SCHEMA
@@ -81,11 +164,13 @@ class OllamaClient:
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = 300.0,
         temperature: float | None = None,
+        num_thread: int | None = None,
     ) -> None:
         self._model = model
         self.base_url = base_url
         self.timeout = timeout
         self._temperature = temperature
+        self._num_thread = num_thread
 
     @property
     def model_version(self) -> str:
@@ -101,8 +186,10 @@ class OllamaClient:
     ) -> LLMResponse:
         """Send prompt to Ollama and return a structured verdict response.
 
-        Retries up to 3 times on parse failure. Never raises for recoverable
-        failures — raises RuntimeError only when all 3 attempts fail.
+        Retries once on parse failure (2 attempts total). Never raises for a
+        recoverable parse/connect failure until attempts are exhausted — but
+        raises immediately, without retrying, on a read timeout or a
+        degenerate (truncated-for-length / empty) response.
         """
         t0 = time.monotonic()
         output, attempts, first_attempt_valid = await self._call_with_retry(
@@ -130,33 +217,107 @@ class OllamaClient:
         last_error: Exception | None = None
         current_prompt = prompt
 
-        for attempt in range(1, 4):
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                raw = await self._single_call(current_prompt, output_schema)
+                raw, done_reason = await self._single_call(current_prompt, output_schema)
+            except Exception as exc:  # noqa: BLE001
+                failure_class, retryable = _classify_request_exception(exc)
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+
+                if failure_class == "read_timeout":
+                    logger.error(
+                        "llm_read_timeout",
+                        attempt=attempt,
+                        timeout_seconds=self.timeout,
+                    )
+                    raise
+
+                if not retryable:
+                    logger.warning(
+                        "llm_retry_skipped",
+                        attempt=attempt,
+                        reason="http_not_retryable",
+                        status_code=status_code,
+                    )
+                    raise
+
+                last_error = exc
+                logger.warning(
+                    "llm_retry_attempt",
+                    attempt=attempt,
+                    failure_class=failure_class,
+                    status_code=status_code,
+                )
+                if attempt < _MAX_ATTEMPTS:
+                    # Nothing to correct -- resend the original prompt unchanged.
+                    current_prompt = prompt
+                    continue
+                logger.error(
+                    "llm_retry_exhausted",
+                    attempts=attempt,
+                    last_failure_class=failure_class,
+                )
+                raise RuntimeError(
+                    f"All {_MAX_ATTEMPTS} Ollama attempts failed. Last error: {last_error}"
+                ) from last_error
+
+            if done_reason == "length" or not raw.strip():
+                # Retrying at the same num_ctx will truncate the same way again.
+                logger.warning(
+                    "llm_retry_skipped",
+                    attempt=attempt,
+                    reason="degenerate_response",
+                    done_reason=done_reason,
+                    response_len=len(raw),
+                )
+                raise RuntimeError(
+                    f"Ollama returned a degenerate response "
+                    f"(done_reason={done_reason!r}, response_len={len(raw)}); not retrying."
+                )
+
+            try:
                 output = VerdictOutput.model_validate_json(raw)
                 return output, attempt, (attempt == 1)
-            except Exception as exc:  # noqa: BLE001
+            except ValidationError as exc:
                 last_error = exc
-                # Corrective follow-up prompt for retry: append the raw
-                # (invalid) response and ask the model to fix it.
-                if attempt < 3:
-                    try:
-                        raw_preview = raw[:200] if "raw" in dir() else "(no output)"
-                    except Exception:  # noqa: BLE001
-                        raw_preview = "(no output)"
-                    current_prompt = (
-                        f"{prompt}\n\n"
-                        f"Your previous response was invalid JSON. "
-                        f"It started with: {raw_preview}\n"
-                        f"Please return ONLY valid JSON matching the schema. "
-                        f"No preamble, no markdown fences."
-                    )
+                errors = exc.errors()
+                failure_class = (
+                    "json_invalid"
+                    if errors and errors[0].get("type") == "json_invalid"
+                    else "schema_invalid"
+                )
+                logger.warning(
+                    "llm_retry_attempt",
+                    attempt=attempt,
+                    failure_class=failure_class,
+                    response_len=len(raw),
+                )
+                if attempt < _MAX_ATTEMPTS:
+                    current_prompt = _build_corrective_prompt(prompt, raw)
+                    continue
+                logger.error(
+                    "llm_retry_exhausted",
+                    attempts=attempt,
+                    last_failure_class=failure_class,
+                )
+                raise RuntimeError(
+                    f"All {_MAX_ATTEMPTS} Ollama attempts failed. Last error: {last_error}"
+                ) from last_error
 
+        # Unreachable (the loop always returns or raises), kept for mypy.
         raise RuntimeError(
-            f"All 3 Ollama attempts failed. Last error: {last_error}"
+            f"All {_MAX_ATTEMPTS} Ollama attempts failed. Last error: {last_error}"
         ) from last_error
 
-    async def _single_call(self, prompt: str, output_schema: dict[str, Any]) -> str:
+    async def _single_call(
+        self, prompt: str, output_schema: dict[str, Any]
+    ) -> tuple[str, str | None]:
+        """Send one request to Ollama. Returns (content, done_reason).
+
+        done_reason is Ollama's own completion-reason field (e.g. "stop",
+        "length") — read so the caller can treat a length-truncated response
+        as non-retryable rather than as an ordinary parse failure.
+        """
         if _LOG_LLM_IO:
             logger.info("llm_prompt_sent", model=self._model, prompt=prompt)
         options: dict[str, Any] = {"num_ctx": 8192}
@@ -166,11 +327,14 @@ class OllamaClient:
             # default (None) omits the key. 0.0 is intentional, hence the explicit
             # `is not None` check rather than a truthiness test.
             options["temperature"] = self._temperature
+        if self._num_thread is not None:
+            options["num_thread"] = self._num_thread
         payload = {
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
             "format": output_schema,
+            "think": False,
             "options": options,
         }
         async with create_http_client(self.timeout, "ollama") as client:
@@ -178,6 +342,7 @@ class OllamaClient:
             response.raise_for_status()
             data = response.json()
             content = data["message"]["content"]
+            done_reason = data.get("done_reason")
         if _LOG_LLM_IO:
             logger.info("llm_response_received", model=self._model, response=content)
-        return content
+        return content, done_reason

@@ -111,7 +111,10 @@ class EventStore(Protocol):
             offset:     Rows to skip (for pagination).
 
         Returns:
-            List of alert dicts ordered by event_timestamp descending.
+            List of alert dicts ordered by ingest_timestamp ascending (FIFO,
+            ADR-023) -- corrected from a stale "event_timestamp descending"
+            description that predated both the field and the ordering this
+            implements.
         """
         ...
 
@@ -146,6 +149,7 @@ class EventStore(Protocol):
         signature_id: int | None,
         src_ip: str | None,
         dst_ip: str | None,
+        candidate_ingest_timestamp: str,
         *,
         window_hours: int = 1,
     ) -> str | None:
@@ -153,8 +157,12 @@ class EventStore(Protocol):
         (signature_id, src_ip, dst_ip), or None if no match exists.
 
         Used by the triage worker to skip redundant LLM calls when the same
-        alert pattern fires repeatedly (C2 beaconing, scan traffic, etc.).
-        The window matches the queue display grouping window (default 1 hour).
+        alert pattern fires repeatedly (C2 beaconing, scan traffic, etc.). The
+        window is anchored to candidate_ingest_timestamp (the candidate alert's
+        own ingest_timestamp), not to the current time, so eligibility depends
+        only on how far apart the two alerts arrived — not on how long the
+        worker took to reach the candidate (ADR-022). Default window matches the
+        queue display grouping window (1 hour).
         """
         ...
 

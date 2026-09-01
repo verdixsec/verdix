@@ -8,7 +8,7 @@
 <!-- Add: docs/images/queue.png -->
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.2.0](https://img.shields.io/badge/version-v0.2.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.2.0)
+[![Version: v0.3.0](https://img.shields.io/badge/version-v0.3.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.0)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -43,10 +43,10 @@ You accept the verdict or override it. Verdix never takes action on an alert aut
 
 | | |
 |---|---|
-| **Hardware** | 32 GB RAM · 16 CPU cores · 60 GB free disk space |
-| **GPU** | Not required. If present, Ollama uses it automatically, reducing verdict time from about three minutes to ~30 sec (projected, not yet measured) |
-| **Software** | Docker 24+ with the `docker compose` plugin · Suricata running and producing `eve.json` |
-| **OS** | Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, or Fedora (current release, or the previous release), or equivalent |
+| **Hardware** | 32 GB RAM · 8 physical cores (16 vCPU) · 30 GB free disk space |
+| **GPU** | Not required. To enable: install the NVIDIA Container Toolkit and uncomment the GPU reservation block for the `llm` service in `docker-compose.yml` — Ollama then uses it automatically, bringing verdict time to under a minute |
+| **Software** | Docker 24+ with the `docker compose` plugin · Suricata 8.x or newer running and producing `eve.json` |
+| **OS** | Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, or Fedora (current release, or the previous release), or equivalent, x86-64 only |
 | **Network** | Outbound HTTPS required for RDAP domain lookups · optional but recommended for VirusTotal · GeoIP works fully offline |
 
 **Capacity.** Verdix analyzes up to 300 alerts per day. Beyond that, alerts are stored and shown in the queue marked deferred, and do not receive a verdict. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for how the limit is counted and how to raise it.
@@ -57,13 +57,13 @@ Disk space splits across two locations: Docker's image store and the model volum
 
 ## Try it in an hour
 
-No Suricata deployment yet? [QUICKSTART.md](QUICKSTART.md) installs Suricata and Verdix on one throwaway Ubuntu box and walks you to a populated queue of verdicts on a public malware capture. Plan for 8 CPU cores, 30 GB RAM, and a ~22 GB image pull.
+No Suricata deployment yet? [QUICKSTART.md](QUICKSTART.md) installs Suricata and Verdix on one throwaway Ubuntu box and walks you to a populated queue of verdicts on a public malware capture. Plan for 4 physical cores (8 vCPU) and 16 GB RAM: about 10-15 minutes to get running, then 40 minutes to a couple hours of unattended analysis depending on your hardware — the ~22 GB is what lands on disk, not what you wait on downloading.
 
 ---
 
 ## Install
 
-Verdix runs as two Docker containers alongside your existing Suricata. Install is `docker compose up` once `.env` points at your `eve.json` and `suricata.yaml` directories. First run pulls ~22 GB and takes 10–20 minutes.
+Verdix runs as two Docker containers alongside your existing Suricata. Install is `docker compose up` once `.env` points at your `eve.json` and `suricata.yaml` directories. First run transfers ~15 GB (image + model) — about 90 seconds on a fast connection — and unpacks to ~22 GB on disk.
 
 See the [Deployment Guide](docs/DEPLOYMENT.md) for same-host, NFS, and SMB topologies, Docker installation, and storage sizing. Full configuration reference: [`example.env`](example.env).
 
@@ -71,7 +71,7 @@ See the [Deployment Guide](docs/DEPLOYMENT.md) for same-host, NFS, and SMB topol
 
 ## Your first verdict
 
-The queue shows alerts as they arrive from `eve.json`. Each alert is analyzed automatically: about three minutes per alert on CPU, or ~30 seconds (projected, not yet measured) if a GPU is present.
+The queue shows alerts as they arrive from `eve.json`. Each alert is analyzed automatically: about two minutes per alert on CPU, or under a minute with a GPU.
 
 To generate test traffic right now, run this on the Suricata host:
 ```bash

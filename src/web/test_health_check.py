@@ -320,6 +320,113 @@ def test_health_check_source_has_no_direct_httpx_import() -> None:
     assert "import httpx" not in source
 
 
+# ---------------------------------------------------------------------------
+# _check_resources — RAM/disk boundary cases (owner-decided requirement figures:
+# production 8 physical cores / 32 GB RAM / 40 GB disk; quickstart 4 physical
+# cores / 16 GB RAM / 30 GB disk; pre-install floor 25 GB free, unchanged).
+# Neither threshold may warn on a correctly-provisioned host at either figure.
+# ---------------------------------------------------------------------------
+
+
+class _FakeVirtualMemory:
+    def __init__(self, total_bytes: int, available_bytes: int) -> None:
+        self.total = total_bytes
+        self.available = available_bytes
+
+
+class _FakeDiskUsage:
+    def __init__(self, free_bytes: int) -> None:
+        self.free = free_bytes
+        self.total = free_bytes  # unused by _check_resources; present for shape only
+
+
+_GIB = 1024**3
+
+
+def test_memory_15_25_gib_quickstart_host_does_not_warn() -> None:
+    """A nominal 16 GB quickstart host measures ~15.25 GiB total (docs/progress.md
+    session 75; PROGRESS.md item 52, both independent hosts). Must read as ok, not
+    warn — the old bare-16 threshold false-warned "below minimum" here."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "virtual_memory",
+        return_value=_FakeVirtualMemory(int(15.25 * _GIB), int(2 * _GIB)),
+    ):
+        items = hc._check_resources()
+    mem_item = next(i for i in items if i.label == "Memory")
+    assert mem_item.status == "ok"
+
+
+def test_memory_30gib_production_host_does_not_warn() -> None:
+    """A nominal 32 GB production host measures ~30 GiB (pre-existing tolerance).
+    Sanity check that the new floor didn't disturb the existing ceiling behavior."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "virtual_memory",
+        return_value=_FakeVirtualMemory(30 * _GIB, 10 * _GIB),
+    ):
+        items = hc._check_resources()
+    mem_item = next(i for i in items if i.label == "Memory")
+    assert mem_item.status == "ok"
+
+
+def test_memory_below_new_floor_still_warns() -> None:
+    """A host genuinely under the adjusted floor (e.g. 10 GB) must still warn —
+    the floor moved to account for measurement variance, not to stop warning."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "virtual_memory",
+        return_value=_FakeVirtualMemory(10 * _GIB, 2 * _GIB),
+    ):
+        items = hc._check_resources()
+    mem_item = next(i for i in items if i.label == "Memory")
+    assert mem_item.status == "warn"
+    assert "16 GB required" in mem_item.detail
+
+
+def test_disk_40gb_production_host_after_install_does_not_warn() -> None:
+    """40 GB production reference, ~20 GB install consumed (PROGRESS item 39 B1's
+    0.32.15-build estimate) leaves ~20.3 GB free. Must not warn."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "disk_usage", return_value=_FakeDiskUsage(int(20.3 * _GIB)),
+    ):
+        items = hc._check_resources()
+    disk_item = next(i for i in items if i.label == "Data volume free space")
+    assert disk_item.status == "ok"
+
+
+def test_disk_30gb_quickstart_host_after_install_does_not_warn() -> None:
+    """30 GB quickstart reference, ~20 GB install consumed leaves ~10.3 GB free.
+    Must not warn — this is the tighter of the two boundary cases."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "disk_usage", return_value=_FakeDiskUsage(int(10.3 * _GIB)),
+    ):
+        items = hc._check_resources()
+    disk_item = next(i for i in items if i.label == "Data volume free space")
+    assert disk_item.status == "ok"
+
+
+def test_disk_below_4gb_free_still_warns() -> None:
+    """Below the 4 GB floor must still warn — confirms the threshold isn't a
+    no-op after being loosened for the boundary cases above."""
+    from src.web import health_check as hc
+
+    with patch.object(
+        hc.psutil, "disk_usage", return_value=_FakeDiskUsage(int(2 * _GIB)),
+    ):
+        items = hc._check_resources()
+    disk_item = next(i for i in items if i.label == "Data volume free space")
+    assert disk_item.status == "warn"
+    assert "minimum 4 GB required" in disk_item.detail
+
+
 def test_to_dict_reports_app_version() -> None:
     """/api/health's version field is sourced from APP_VERSION, not a literal
     duplicated here — same single-source-of-truth requirement as the UI

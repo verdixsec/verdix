@@ -98,3 +98,5 @@ validation_results/
 # Runtime SQLite databases (created by the application at startup)
 verdix.db
 cache.db
+
+runs/

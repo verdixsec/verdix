@@ -89,6 +89,6 @@ async def evaluate_entry(
             contributing_facts=[],
             latency_ms=0,
             first_attempt_valid=False,
-            attempts=3,
+            attempts=2,
             error=str(exc),
         )

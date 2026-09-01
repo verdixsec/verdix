@@ -12,26 +12,21 @@ Verdix needs direct access to Suricata's `eve.json`. The topology you need is de
 
 - A supported Linux distribution: Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, Fedora (current release, or the previous release), or equivalent
 - Docker 24+ with Docker Compose v2 (`docker compose`, not `docker-compose`); see [Install Docker](#install-docker) if not already installed
-- Suricata already running and producing `eve.json`, either on this host or a networked Suricata Server. No Suricata yet? [QUICKSTART.md](../QUICKSTART.md) installs Suricata and Verdix on one host and walks you to a populated queue using a public malware capture.
+- Suricata 8.x or newer, already running and producing `eve.json`, either on this host or a networked Suricata Server. No Suricata yet? [QUICKSTART.md](../QUICKSTART.md) installs Suricata and Verdix on one host and walks you to a populated queue using a public malware capture.
 - **32 GB RAM minimum**: the LLM runs in the sibling `llm` container, not in-process with the app. The 32 GB minimum covers both containers on one host
-- **60 GB free disk space**, split across two locations that land on different filesystems if you relocate Docker storage. Measured on a clean single-partition install: ~12 GB base OS + ~33 GB after Verdix (images + volumes) — a 40 GB box lands inside the app's own low-disk warning band on first boot, so 60 GB is the real recommendation:
-  - **Images** (Docker's image/layer store, `/var/lib/containerd` when the containerd image store is in use): ~11 GB actual. The LLM runtime image bundles Ollama's CUDA/ROCm runtime and is ~10.6 GB of that on its own; the app image is ~0.4 GB. Budget **15 GB minimum, 20 GB recommended** here.
-  - **Volumes** (Docker's data-root): ~12 GB actual. The `verdix_models` volume holds the ~11 GB Gemma model; `verdix_data` (database, GeoIP files, enrichment cache) is small but grows over time. Budget **15 GB minimum, 20 GB recommended** here.
-
-  If you relocate Docker storage so images and volumes land on different disks, check each location separately using the per-location budgets above; the combined 60 GB figure only applies to the default, nothing-relocated case. See the note below.
-
-  Check free space where Docker actually stores data, not `df -h /` — they're often different filesystems:
-  ```bash
+- **30 GB free disk space where Docker stores its data.** Verdix consumes ~22 GB (about 9 GB of images plus a ~12 GB volume side holding the Gemma model and the database), leaving modest headroom. This is not `df -h /` — Docker's storage often lands on a different filesystem, so check the real location first:
+```bash
   docker info --format '{{.DockerRootDir}}'
   df -h "$(docker info --format '{{.DockerRootDir}}')"
-  ```
+```
+  If you don't have 30 GB free there, stop and free up space before running `docker compose up`. If you relocate Docker storage so images and volumes land on different filesystems, budget each: ~9 GB on the image side, ~12 GB on the volume side.
 
-  The app's own health check (Setup screen and `/api/health`) only monitors the volumes location (15 GB min / 20 GB recommended), since it runs inside the app container, which has no visibility into Docker's image store. A green health check does not by itself confirm the images location has enough room; check that side manually before you install if you're unsure.
-- **16 cores is the reference configuration; no GPU required.** Verdix admits up to 300 alerts per day; see Daily capacity below.
+  The app's own health check (Setup screen and `/api/health`) monitors only the volume side and warns below 4 GB free there. It runs inside the app container and can't see Docker's image store, so a green check doesn't confirm the image side has room — verify that yourself if unsure.
+- **8 physical cores (16 vCPU) is the reference configuration; no GPU required.** Verdix admits up to 300 alerts per day; see Daily capacity below. The health screen's CPU check counts physical cores, not vCPU — a host sized to a vCPU count can show fewer physical cores than expected and trigger a "cores recommended" warning even though it runs fine; `QUICKSTART.md` documents a field-tested example at half this spec.
 
-  Fewer than 16 cores will still run, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
+  Fewer than 8 physical cores will still run, but verdict throughput drops below what a typical deployment generates and the queue falls behind. Verdix reports queue depth when this happens. It is not a configuration we recommend.
 
-  A GPU with 12 GB VRAM or more drops verdict time to about 30 seconds (projected, not yet measured); Ollama uses it automatically.
+  A GPU with 12 GB VRAM or more drops verdict time to under a minute. To enable it: install the NVIDIA Container Toolkit and uncomment the GPU reservation block under the `llm` service in `docker-compose.yml` — commented out by default, and inference itself always runs in `llm`, never `app`. (The Setup screen's GPU status check currently runs from inside the `app` container, not `llm`, so it may still report "No GPU detected" even after acceleration is correctly enabled; check `docker compose logs llm` for the actual runtime state.)
 - **Outbound HTTPS access**, for RDAP domain lookups (runs on every alert, to the relevant TLD registry). VirusTotal, if you configure a key, also uses it. GeoIP works fully offline — the DB-IP database is embedded in the image.
 
 **Daily capacity.** Verdix admits up to `VX_TRIAGE_DAILY_CAP` alerts per day (default 300). The count is of alerts admitted since `VX_DAILY_RESET_HOUR` (default midnight local), not of verdicts produced, so an alert that is queued, in progress, or failed consumes a slot the same as one already analyzed. Once the day's count reaches the cap, each further alert is stored with status `deferred` and is not analyzed. Deferred alerts stay visible in the queue and keep that status; Verdix does not pick them up on a later day. You can open a deferred alert and record your own disposition, but no verdict is generated for it, and deferred alerts age out with the retention window. Raise `VX_TRIAGE_DAILY_CAP` if your hardware supports more throughput; a GPU-equipped host has considerably more headroom.
@@ -94,7 +89,7 @@ Suricata and Verdix run on the same machine.
 
 ```mermaid
 flowchart TB
-    subgraph host["Host (32 GB RAM, 16 cores)"]
+    subgraph host["Host (32 GB RAM, 8 physical cores)"]
         suricata["Suricata"] --> eve["/var/log/suricata/eve.json"]
         eve --> compose
         subgraph compose["docker compose up"]
@@ -152,7 +147,7 @@ Common path variants by Suricata installation method:
 docker compose up -d
 ```
 
-The first run pulls ~22 GB total: the app image (~0.4 GB) and the LLM runtime image (~10.6 GB, which bundles Ollama's CUDA/ROCm runtime), then the LLM container pulls the Gemma model (~11 GB) straight into the `verdix_models` volume. This takes 10–20 minutes depending on your connection speed. Every subsequent start is instant because the model stays in the volume.
+The first run transfers ~15 GB — the app and LLM runtime images compress to about 4 GB combined, plus the ~11 GB Gemma model pulled straight into the `verdix_models` volume — and unpacks to ~22 GB on disk. Expect roughly 90 seconds on a fast connection; a slower link takes longer. Every subsequent start is instant because the model stays in the volume.
 
 Watch the startup:
 ```bash
@@ -181,7 +176,7 @@ Accept the EULA, then log in with the admin password you set in `.env`.
 curl http://testmynids.org/uid/index.html
 ```
 
-This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about three minutes on CPU.
+This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about two minutes on CPU.
 
 ---
 
@@ -196,7 +191,7 @@ flowchart LR
         s_logs["/var/log/suricata/"]
         s_config["/etc/suricata/"]
     end
-    subgraph apphost["Verdix Application Host (32 GB RAM, 16 cores)"]
+    subgraph apphost["Verdix Application Host (32 GB RAM, 8 physical cores)"]
         m_logs["/mnt/suricata_logs/"]
         m_config["/mnt/suricata_config/"]
         subgraph compose["docker compose up"]
@@ -412,7 +407,7 @@ Accept the EULA, then log in with the admin password you set in `.env`.
 curl http://testmynids.org/uid/index.html
 ```
 
-This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about three minutes on CPU.
+This fires `ET ATTACK_RESPONSE Id Check Returned User Id` immediately. The alert appears in the queue within 30 seconds; the LLM verdict follows in about two minutes on CPU.
 
 ---
 
@@ -426,7 +421,7 @@ flowchart LR
         w_logs["\\\\SURICATA_HOST_IP\\suricata-logs"]
         w_config["\\\\SURICATA_HOST_IP\\suricata-config"]
     end
-    subgraph apphost["Verdix Application Host (32 GB RAM, 16 cores)"]
+    subgraph apphost["Verdix Application Host (32 GB RAM, 8 physical cores)"]
         m_logs["/mnt/suricata_logs/"]
         m_config["/mnt/suricata_config/"]
         subgraph compose["docker compose up"]
@@ -595,13 +590,19 @@ docker compose down -v
 
 ---
 
+## Upgrading
+
+Upgrade guidance will accompany the first published update.
+
+---
+
 ## Optional configuration
 
 > **About `docker-compose.override.yml`:** Docker Compose automatically merges a file named `docker-compose.override.yml` with `docker-compose.yml` on every `docker compose` command; no extra flags needed. You don't need one for a standard install: `VX_SURICATA_LOG_DIR` and `VX_SURICATA_CONFIG_DIR` in `.env` already cover the NFS/SMB mount paths in Topologies 2 and 3. Create one only for a host-specific customization below (TLS-proxy CA bundle, custom GeoIP database paths) — create the file yourself and copy in the snippet from whichever section applies. It's gitignored, so updates to Verdix never overwrite it.
 
 ### Moving Docker storage to a larger disk
 
-If your root partition has less than 60 GB free, move Docker's storage before pulling images:
+If your Docker storage location has less than 30 GB free, move it to a larger disk before installing:
 
 ```bash
 # Stop Docker

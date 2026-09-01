@@ -99,6 +99,17 @@ from src.llm.ollama_client import OllamaClient
     "temperature=0 also sets topK=1/topP=1 for maximally deterministic output.",
 )
 @click.option(
+    "--num-thread",
+    default=None,
+    type=int,
+    help="Ollama thread-pool size (ollama provider only). Omit to leave the key "
+    "out of the request and let Ollama size the pool from the host's visible "
+    "physical cores -- this collapses throughput on any host where the "
+    "allowed CPUs (cgroup mask, Docker --cpus, k8s limit) are fewer than the "
+    "visible core count (PROGRESS.md item 45). Pass the host's actual allowed "
+    "core count explicitly when running against such a host.",
+)
+@click.option(
     "--prompt-version",
     default=None,
     help="Override eval/pipeline.py's PROMPT_VERSION pin for this run only, e.g. "
@@ -117,6 +128,7 @@ def main(
     api_key: str | None,
     timeout: float,
     temperature: float | None,
+    num_thread: int | None,
     prompt_version: str | None,
 ) -> None:
     configure_logging("INFO")
@@ -135,6 +147,8 @@ def main(
             raise click.UsageError(
                 "--api-key (or GEMINI_API_KEY env var) is required for --provider gemini"
             )
+        if num_thread is not None:
+            click.echo("Warning: --num-thread has no effect with --provider gemini (ignored).")
         effective_model = model or "gemini-2.5-flash"
         client = GeminiClient(
             api_key=api_key, model=effective_model, temperature=temperature
@@ -151,12 +165,14 @@ def main(
             base_url=ollama_url,
             timeout=timeout,
             temperature=temperature,
+            num_thread=num_thread,
         )
         temp_label = "model default" if temperature is None else f"{temperature:g}"
+        thread_label = "Ollama default (visible cores)" if num_thread is None else str(num_thread)
         click.echo(f"Loaded {len(entries)} corpus entries from {corpus}")
         click.echo(
             f"Provider: Ollama  Model: {effective_model}  URL: {ollama_url}  "
-            f"Temperature: {temp_label}"
+            f"Temperature: {temp_label}  num_thread: {thread_label}"
         )
 
     effective_prompt_version = prompt_version or PROMPT_VERSION

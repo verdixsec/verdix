@@ -296,40 +296,59 @@ def check_blocked_paths() -> dict[str, Any]:
 # Resource checks
 # ---------------------------------------------------------------------------
 
-_RAM_MINIMUM_GB = 16
+# _RAM_MINIMUM_GB is the quickstart reference floor (16 GB nominal), adjusted down for
+# real-world variance: a correctly-provisioned 16 GB host measures ~15.25 GiB total, not
+# 16 (firmware/UEFI-reserved regions, ACPI tables, iGPU shared memory — the same effect
+# _RAM_OK_GB's tolerance below _RAM_RECOMMENDED_GB already accounts for at the top of the
+# range), confirmed independently on two hosts (docs/progress.md session 75; PROGRESS.md
+# item 52, both "15.25 GiB"). A bare 16 threshold reads every real 16 GB host as below
+# minimum. 15 clears the measured figure with a small, real margin — same ~6% tolerance
+# ratio as 30-vs-32 below, applied at the floor instead of the ceiling. Owner-decided
+# requirement figures (production 32 GB / quickstart 16 GB, one code path serves both)
+# supersede PROGRESS item 39's "do not lower the documented 32 GB RAM requirement" — see
+# PROGRESS.md for the decision record. Below this figure: warn. At or above: ok, with the
+# detail text noting whether the host also clears the production reference.
+_RAM_MINIMUM_GB = 15
+_RAM_MINIMUM_NOMINAL_GB = 16  # documented quickstart figure — display only, see below
 _RAM_RECOMMENDED_GB = 32
 _RAM_OK_GB = 30  # tolerance below _RAM_RECOMMENDED_GB — see comment below
 
-# Scoped to what this check can actually see: VX_DATA_PATH's filesystem,
-# i.e. wherever the verdix_data volume lands (below). It cannot observe
-# Docker's image/layer store (~11 GB measured — ollama base + lean llm
-# layer + app image) — the app container has no docker.sock, no docker
-# CLI, and no bind-mount into host paths like /var/lib/containerd, and
-# adding any of those for a disk-space warning would be a real security
-# regression (root-equivalent host access) for a cosmetic UI check. So
-# this threshold covers only the volumes location (verdix_models +
-# verdix_data, ~12 GB measured): 15 GB minimum / 20 GB recommended, for
-# pull/update headroom and DB/cache growth. A combined 30/40 GB figure
-# would test something this check can't observe — it would report "ok"
-# on a box where /var/lib/verdix's disk has plenty of room but the image
-# store's disk is nearly full, which is a real, seen-in-the-field failure
-# mode. The "Data volume free space" label (below) is deliberately narrow
-# to match; DEPLOYMENT.md's storage section covers the image-store side,
-# which this check cannot reach.
-_DISK_MINIMUM_GB = 15
+# Scoped to what this check can actually see: VX_DATA_PATH's filesystem, i.e. wherever
+# the verdix_data volume lands. It cannot observe Docker's image/layer store as a
+# separate, attributable figure — the app container has no docker.sock, no docker CLI,
+# and no bind-mount into host paths like /var/lib/containerd, and adding any of those for
+# a disk-space warning would be a real security regression (root-equivalent host access)
+# for a cosmetic UI check.
+#
+# Under the compose file as shipped, this is a smaller gap than it sounds: verdix_data is
+# a plain named volume with no custom driver (docker-compose.yml), so under Docker's
+# default `local` driver it lives inside Docker's own data-root — the same filesystem
+# `docker info --format '{{.DockerRootDir}}'` reports, and the same filesystem the image
+# store shares on a single-disk host with nothing relocated. On that default topology,
+# this check's free-space number already reflects the whole box, not just the volumes-
+# only footprint. It diverges from the images side only on a host that has relocated
+# Docker storage (docs/DEPLOYMENT.md "Moving Docker storage to a larger disk") — and even
+# then, only if the containerd image store keeps layers on a separate path
+# (docs/DEPLOYMENT.md's containerd caveat) rather than moving with data-root. Both are
+# real, documented configurations this check still cannot see into.
+#
+# Threshold: 4 GB free (owner decision, superseding the prior 15 GB minimum / 20 GB
+# recommended — see PROGRESS.md). Checked against the owner's new reference figures: on a
+# ~20 GB install (PROGRESS item 39 B1's 0.32.15-build estimate), a 40 GB production host
+# has ~20.3 GB free remaining and a 30 GB quickstart host has ~10.3 GB — both clear 4 GB
+# with real margin. NOT yet checked clear against the currently-shipped image (~21.8 GB
+# install): a host that exactly meets the documented 25 GB pre-install floor would land at
+# ~3.2 GB free, below this threshold. This threshold targets the forthcoming build (Ollama
+# 0.32.15 + OLLAMA_KEEP_ALIVE + think:false) — ship it in the same release as that build,
+# not ahead of it.
+_DISK_MINIMUM_GB = 4
 _DISK_RECOMMENDED_GB = 20
 
 
 def _check_resources() -> list[CheckItem]:
     items: list[CheckItem] = []
 
-    # RAM
-    # _RAM_OK_GB sits below _RAM_RECOMMENDED_GB on purpose: OS-visible
-    # MemTotal always reads a few percent under nominal DIMM capacity
-    # (firmware/UEFI-reserved regions, ACPI tables, iGPU shared memory), so
-    # a correctly provisioned 32 GB box routinely reports ~30 GB. Comparing
-    # against the recommended figure with no tolerance false-warned on
-    # hardware that met spec.
+    # RAM — threshold rationale is on the constants above (_RAM_OK_GB/_RAM_MINIMUM_GB).
     mem = psutil.virtual_memory()
     total_gb = mem.total / (1024 ** 3)
     avail_gb = mem.available / (1024 ** 3)
@@ -339,15 +358,18 @@ def _check_resources() -> list[CheckItem]:
             f"{total_gb:.0f} GB total · {avail_gb:.0f} GB available",
         ))
     elif total_gb >= _RAM_MINIMUM_GB:
+        # Meets the quickstart floor but not the production reference — informational,
+        # not a warning: the same threshold serves both deployment tiers and neither is
+        # misconfigured here.
         items.append(CheckItem(
-            "Memory", "warn",
-            f"{total_gb:.0f} GB total — {_RAM_RECOMMENDED_GB} GB recommended "
-            "for comfortable CPU inference",
+            "Memory", "ok",
+            f"{total_gb:.0f} GB total · {avail_gb:.0f} GB available — "
+            f"{_RAM_RECOMMENDED_GB} GB recommended for production",
         ))
     else:
         items.append(CheckItem(
             "Memory", "warn",
-            f"{total_gb:.0f} GB total — minimum {_RAM_MINIMUM_GB} GB required; "
+            f"{total_gb:.0f} GB total — minimum {_RAM_MINIMUM_NOMINAL_GB} GB required; "
             f"{_RAM_RECOMMENDED_GB} GB recommended",
         ))
 
@@ -388,12 +410,12 @@ def _check_resources() -> list[CheckItem]:
         ))
 
     # Disk
-    # This measures free space on VX_DATA_PATH's filesystem only — the
-    # verdix_data volume (SQLite DB, GeoIP files, enrichment cache). It
-    # cannot see Docker's image/layer store or the verdix_models volume,
-    # which can live on a different filesystem entirely if Docker's
-    # data-root has been relocated (see DEPLOYMENT.md's "Moving Docker
-    # storage" section) — check those separately in that case.
+    # This measures free space on VX_DATA_PATH's filesystem — the same filesystem the
+    # verdix_data and verdix_models volumes both land on under the compose file as
+    # shipped (see the constant's comment above). It diverges from Docker's image/layer
+    # store only if that store has been relocated to a genuinely separate filesystem
+    # (see DEPLOYMENT.md's "Moving Docker storage" section and its containerd caveat) —
+    # check that side separately in that case.
     data_path = os.environ.get("VX_DATA_PATH", "/var/lib/verdix")
     try:
         disk = psutil.disk_usage(data_path if os.path.exists(data_path) else "/")
@@ -401,8 +423,10 @@ def _check_resources() -> list[CheckItem]:
         if free_gb >= _DISK_RECOMMENDED_GB:
             items.append(CheckItem("Data volume free space", "ok", f"{free_gb:.0f} GB free"))
         elif free_gb >= _DISK_MINIMUM_GB:
+            # Meets the floor but not the recommended headroom — informational, not a
+            # warning: the same threshold serves both deployment tiers.
             items.append(CheckItem(
-                "Data volume free space", "warn",
+                "Data volume free space", "ok",
                 f"{free_gb:.0f} GB free — {_DISK_RECOMMENDED_GB} GB recommended",
             ))
         else:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Dillon Jayanthan
 # Verdix — Application image
-# Build:  docker build -t verdix/app:0.1.0 .
+# Build:  docker build -t verdix/app:0.2.0 .
 # Run:    see docker-compose.yml
 
 FROM python:3.13-slim

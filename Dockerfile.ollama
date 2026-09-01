@@ -10,19 +10,25 @@
 # fetch, no egress to ollama.com.
 #
 # Build (repeat only when the pinned Ollama version bumps):
-#   docker build -f Dockerfile.ollama -t ghcr.io/verdixsec/verdix/llm:latest .
-#   docker push ghcr.io/verdixsec/verdix/llm:latest
+#   docker build -f Dockerfile.ollama -t ghcr.io/verdixsec/verdix/llm:0.32.15 .
+#   docker push ghcr.io/verdixsec/verdix/llm:0.32.15
 #
 # Publishing the model artifact to ghcr is a maintainer-only step, run with
 # internal tooling — not part of this repo.
 #
 # For air-gapped installs see Dockerfile.fat + docker-compose.fat.yml.
 
-FROM ollama/ollama:0.23.2
+FROM ollama/ollama:0.32.15
 
 # Disable Ollama cloud features (remote inference, web search, model recommendations).
-# Verified against Ollama 0.23.2: startup log shows "Ollama cloud disabled: true".
+# Verified against Ollama 0.32.15: startup log shows "Ollama cloud disabled: true".
 ENV OLLAMA_NO_CLOUD=1
+
+# Keep the model resident indefinitely. This container serves exactly one model,
+# and the RAM to hold it is already a hard requirement (see docs/DEPLOYMENT.md) —
+# evicting it after Ollama's 5-minute default idle window only converts sporadic
+# real-world alert gaps into a 28-81s reload on whichever alert breaks the gap.
+ENV OLLAMA_KEEP_ALIVE=-1
 
 # DEAD CODE as of the native-`ollama pull` entrypoint:
 # oras and GEMMA4_GGUF_SHA256 were needed for the old oras-pull + sha256-verify +

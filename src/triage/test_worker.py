@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import sqlalchemy as sa
+from structlog.contextvars import get_contextvars, merge_contextvars
+from structlog.testing import capture_logs
 
 from src.enrichment.models import (
     EnrichmentResult,
@@ -21,8 +24,9 @@ from src.enrichment.models import (
     IndicatorType,
 )
 from src.infra.db.event_store import SQLiteEventStore
+from src.infra.db.models import Alert
 from src.infra.db.operational_store import SQLiteOperationalStore
-from src.infra.db.session import close_db, init_db
+from src.infra.db.session import close_db, get_session, init_db
 from src.infra.suricata_config.models import SuricataConfig
 from src.llm.models import LLMResponse
 from src.triage.cleanup import EveCleanupTask
@@ -261,6 +265,57 @@ async def test_process_alert_marks_failed_on_llm_error(
     assert await op_store.get_current_verdict_for_alert(alert_id) is None
 
 
+async def test_context_not_leaked_between_alerts(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    suricata_config: SuricataConfig,
+) -> None:
+    """bind_alert_context()/clear_alert_context() must not leak alert_id
+    across alerts -- a first alert that raises must not leave its alert_id
+    bound to contextvars merged into a second, successful alert's log lines.
+    A leak here would make alert_id-based log correlation actively
+    misleading -- exactly the diagnosis this wiring exists to enable."""
+    bad_llm = MagicMock()
+    bad_llm.model_version = "gemma4:test"
+    bad_llm.complete = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+    worker_a = _make_worker(event_store, op_store, bad_llm, suricata_config)
+    alert_id_a = await event_store.insert_alert(_make_alert_eve(), status="queued")
+    alert_a = (await event_store.query_alerts(status="queued", limit=1))[0]
+    await worker_a._process_alert(alert_a)
+
+    # Cleared after a *failing* alert too, not just a successful one.
+    assert get_contextvars() == {}
+
+    good_llm = MagicMock()
+    good_llm.model_version = "gemma4:test"
+    good_llm.complete = AsyncMock(return_value=LLMResponse(
+        verdict_category="likely_fp",
+        confidence_score=0.5,
+        reasoning="ok",
+        contributing_facts=[],
+        raw_output={},
+        latency_ms=1,
+        model_version="gemma4:test",
+        prompt_version="verdict_v1",
+        llm_inputs={},
+        first_attempt_valid=True,
+        attempts=1,
+    ))
+    worker_b = _make_worker(event_store, op_store, good_llm, suricata_config)
+    alert_id_b = await event_store.insert_alert(
+        _make_alert_eve(src_ip="10.0.0.6"), status="queued"
+    )
+    alert_b = (await event_store.query_alerts(status="queued", limit=1))[0]
+
+    with capture_logs(processors=[merge_contextvars]) as logs:
+        await worker_b._process_alert(alert_b)
+
+    bound_ids = {e["alert_id"] for e in logs if "alert_id" in e}
+    assert bound_ids == {alert_id_b}
+    assert alert_id_a not in bound_ids
+
+
 async def test_dequeue_respects_daily_cap(
     event_store: SQLiteEventStore,
     op_store: SQLiteOperationalStore,
@@ -283,6 +338,37 @@ async def test_dequeue_returns_none_when_queue_empty(
     worker = _make_worker(event_store, op_store, mock_llm, suricata_config)
     result = await worker._dequeue_next()
     assert result is None
+
+
+async def test_dequeue_returns_oldest_queued_alert_fifo(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    """ADR-023: FIFO. Three alerts inserted out of chronological order --
+    _dequeue_next() must return the oldest by ingest_timestamp, regardless of
+    insertion order."""
+    worker = _make_worker(event_store, op_store, mock_llm, suricata_config)
+
+    id_middle = await event_store.insert_alert(_make_alert_eve(flow_id=1), status="queued")
+    id_oldest = await event_store.insert_alert(_make_alert_eve(flow_id=2), status="queued")
+    id_newest = await event_store.insert_alert(_make_alert_eve(flow_id=3), status="queued")
+
+    async with get_session() as session:
+        for alert_id, ts in (
+            (id_middle, "2026-08-27T12:00:00+00:00"),
+            (id_oldest, "2026-08-27T10:00:00+00:00"),
+            (id_newest, "2026-08-27T14:00:00+00:00"),
+        ):
+            await session.execute(
+                sa.update(Alert).where(Alert.alert_id == alert_id).values(ingest_timestamp=ts)
+            )
+
+    result = await worker._dequeue_next()
+
+    assert result is not None
+    assert result["alert_id"] == id_oldest
 
 
 async def test_process_alert_with_vt_enrichment(
@@ -340,6 +426,71 @@ async def test_role_assignment_persisted(
     # initiator_role stores the initiator IP.
     assert updated["initiator_role"] is not None
     assert updated["role_assignment_confidence"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Dedup / inheritance — ADR-022
+# ---------------------------------------------------------------------------
+
+
+async def test_dedup_second_in_group_inherits(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    """Two sequential same-group alerts: the second inherits the first's verdict."""
+    worker = _make_worker(event_store, op_store, mock_llm, suricata_config)
+
+    alert_a = await event_store.insert_alert(_make_alert_eve(flow_id=1), status="queued")
+    alert_b = await event_store.insert_alert(_make_alert_eve(flow_id=2), status="queued")
+
+    await worker._process_alert(await event_store.get_alert(alert_a))
+    await worker._process_alert(await event_store.get_alert(alert_b))
+
+    verdict_b = await op_store.get_current_verdict_for_alert(alert_b)
+    assert verdict_b["latency_ms"] == 0
+    assert json.loads(verdict_b["llm_inputs"]).get("inherited_from")
+
+
+async def test_dedup_third_in_group_inherits_from_original_producer(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    """ADR-022 DECIDE 1: one hop only — but reaching past an inherited sibling to
+    a produced source is still one hop, not a chain.
+
+    A (first in group) is analyzed and produces a verdict. B (same group)
+    inherits from A. C (same group) must skip B — B is itself an inherited
+    verdict, and DECIDE 1 forbids chaining *through* it — and inherit directly
+    from A instead. C is not analyzed individually and does not chain off B.
+    """
+    worker = _make_worker(event_store, op_store, mock_llm, suricata_config)
+
+    alert_a = await event_store.insert_alert(_make_alert_eve(flow_id=1), status="queued")
+    alert_b = await event_store.insert_alert(_make_alert_eve(flow_id=2), status="queued")
+    alert_c = await event_store.insert_alert(_make_alert_eve(flow_id=3), status="queued")
+
+    await worker._process_alert(await event_store.get_alert(alert_a))
+    await worker._process_alert(await event_store.get_alert(alert_b))
+    await worker._process_alert(await event_store.get_alert(alert_c))
+
+    verdict_a = await op_store.get_current_verdict_for_alert(alert_a)
+    verdict_b = await op_store.get_current_verdict_for_alert(alert_b)
+    verdict_c = await op_store.get_current_verdict_for_alert(alert_c)
+
+    # A: produced.
+    assert "inherited_from" not in json.loads(verdict_a["llm_inputs"])
+
+    # B: inherited from A — sets up the boundary case DECIDE 1 governs.
+    assert json.loads(verdict_b["llm_inputs"]).get("inherited_from") == verdict_a["verdict_id"]
+
+    # C: inherits from A specifically — reaches past B rather than chaining
+    # through it or falling back to a full individual analysis.
+    assert json.loads(verdict_c["llm_inputs"]).get("inherited_from") == verdict_a["verdict_id"]
+    assert verdict_c["latency_ms"] == 0
 
 
 # ---------------------------------------------------------------------------

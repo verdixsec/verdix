@@ -1,10 +1,10 @@
 # Verdix Quickstart
 
-This walks a bare Ubuntu box to a queue of Verdix verdicts on real malware traffic. It assumes you have no Suricata deployment yet, so it installs Suricata first, then Verdix alongside it on the same host.
+This walks a bare Ubuntu box to a queue of Verdix verdicts on real malware traffic. It assumes a clean host with no other Docker workloads and no existing Suricata deployment — it installs Suricata first, then Verdix alongside it on the same host.
 
 The traffic is a public FormBook infection capture from malware-traffic-analysis.net, replayed offline through Suricata. Nothing here configures live capture, and nothing touches a production network.
 
-Allow about an hour. Most of that is the image pull.
+Allow about an hour, most of it unattended analysis, not the download: roughly 10-15 minutes to get Verdix running and traffic replayed, then 40 minutes to a couple hours while the model works through the queue, depending on your hardware.
 
 ---
 
@@ -12,14 +12,14 @@ Allow about an hour. Most of that is the image pull.
 
 | | |
 |---|---|
-| **OS** | Ubuntu 22.04 LTS or newer |
-| **Hardware** | 8 CPU cores · 30 GB RAM |
-| **Disk** | 25 GB free **at Docker's storage location**, which is often not the same filesystem as your home directory. Step 3 checks this. |
+| **OS** | Ubuntu 22.04 LTS or newer, x86-64 only |
+| **Hardware** | 4 physical cores (8 vCPU) · 16 GB RAM |
+| **Disk** | 30 GB free **at Docker's storage location**, which is often not the same filesystem as your home directory. Step 3 checks this. |
 | **Network** | Outbound HTTPS for the image pull and for RDAP lookups during analysis |
 
-These are walkthrough figures, not the product's. Verdix's reference configuration is 32 GB of RAM, 16 cores, and 60 GB of disk, and the health screen measures against that: on a box this size it reports low memory and low disk. Both warnings are expected here and neither stops the run. A production sensor writes `eve.json` continuously and gets upgraded to new images, which is what the larger figures cover; a throwaway box replaying one trimmed capture does not.
+These are walkthrough figures. For production Verdix recommends 32 GB of RAM and 8 physical cores (16 vCPU); the disk floor is the same 30 GB either way. The health screen measures memory and cores against the production figures, so on a box this size it reports low memory and — since the check counts physical cores, not vCPU — a CPU warning. Both are expected here and neither stops the run. A production sensor triaging a live feed all day is what the larger memory and core figures cover; a throwaway box replaying one trimmed capture does not need them.
 
-Fewer cores means slower verdicts, not worse ones. The model is deterministic at temperature 0, so an 8-core box reaches the same verdicts as a 16-core box and takes longer doing it.
+Fewer cores means slower verdicts, not worse ones — see "Why your run may differ" below for the caveats that apply regardless of hardware.
 
 ---
 
@@ -45,7 +45,7 @@ Confirm the version:
 suricata --build-info | head -n 1
 ```
 
-You should see Suricata 8.0.6 or newer.
+You should see Suricata 8.0.3 or above.
 
 Leave `/etc/suricata/suricata.yaml` alone. The stock `HOME_NET` covers RFC1918, which is what this capture uses, and Verdix reads that file to work out which side of each alert is internal.
 
@@ -71,22 +71,16 @@ You should see `Hello from Docker!`
 
 ## 3. Check disk space where Docker stores images
 
-Verdix pulls about 22 GB and unpacks it, and the model volume holds an 11 GB file. All of that lands wherever Docker keeps its data, not in your home directory. `df -h /` is not the check.
+Skip this and the first-run pull can fail partway through with **no space left on device**, leaving a half-written image store to clean up before you can retry. Verdix consumes about 22 GB on disk — the app and LLM images plus the 11 GB model — all landing wherever Docker keeps its data, not in your home directory. `df -h /` is not the check.
 
 ```bash
 docker info --format '{{.DockerRootDir}}'
 df -h "$(docker info --format '{{.DockerRootDir}}')"
 ```
 
-Installing Verdix consumes about 24 GB on that filesystem, so 25 GB available is the floor for finishing this walkthrough. Below roughly 40 GB the health screen reports low disk and keeps reporting it, because it wants 15 GB still free after the install. On a test box that warning is expected.
+30 GB available on that filesystem is the floor for finishing this walkthrough (~22 GB consumed), with headroom to spare.
 
-If `docker info` reports `containerd` as the storage driver, images land under `/var/lib/containerd` instead and volumes stay under the path above. Check both:
-
-```bash
-df -h /var/lib/docker /var/lib/containerd
-```
-
-Short on space? Move Docker's data directory to a larger disk before you pull anything. The Deployment Guide covers this under "Moving Docker storage to a larger disk"; the link is at the end of this page. Doing it after a failed pull means cleaning up a half-written image store first.
+Short on space? Move Docker's data directory to a larger disk before you pull anything. The Deployment Guide covers this under "Moving Docker storage to a larger disk"; the link is at the end of this page.
 
 ---
 
@@ -115,7 +109,7 @@ Leave everything else at its default.
 docker compose up -d
 ```
 
-The first run pulls roughly 22 GB and dominates the wait. Every start after this one is quick, because the model stays in the `verdix_models` volume.
+The first run transfers about 15 GB and unpacks to ~22 GB on disk — roughly 90 seconds on a fast connection, longer on a slower one. Every start after this one is quick, because the model stays in the `verdix_models` volume.
 
 Watch it come up:
 
@@ -124,8 +118,6 @@ docker compose logs -f app
 ```
 
 Look for `eve_tailer_started` and `suricata_config_loaded`. Both appear within about 30 seconds of the containers starting.
-
-Your own shell cannot list `/var/log/suricata/` without `sudo`, because the package restricts that directory to the `suricata` group. Verdix reads it anyway: the container starts as root, joins the group that owns the files, then drops to its unprivileged user. The entrypoint records which group it joined in the startup log.
 
 ---
 
@@ -153,7 +145,7 @@ curl -O https://www.malware-traffic-analysis.net/2023/06/30/2023-06-30-Formbook-
 unzip -P infected_20230630 2023-06-30-Formbook-infection-traffic.pcap.zip
 ```
 
-The archive password is `infected_20230630`, passed above with `-P`. Every capture on that site is protected the same way.
+Every capture on that site is protected the same way.
 
 Verdix ships no sample data. You are downloading the original capture from its publisher, and nothing derived from it is redistributed in this repository.
 
@@ -195,21 +187,21 @@ The alerts appear under the default "Last 24h" view even though the traffic is f
 
 ## What you should see
 
-24 alerts land as 16 queue rows: 13 true positives, 2 false positives, and 1 flagged for investigation.
+23-24 alerts land as 16 queue rows: 13 true positives, 1 false positive, and 2 flagged for investigation. The two DNS rows are the most sensitive to your Suricata ruleset version, so their exact verdicts can move between false-positive and investigate — either is expected.
 
-Verdix groups by signature, source, and destination inside a one-hour window, so grouping only collapses repeat hits on the *same* destination. FormBook beacons to a dozen different C2 addresses, and each one keeps its own row. The row counts below are queue rows; the alert counts are the raw Suricata events behind them.
+FormBook beacons to a dozen different C2 addresses, and each one keeps its own row. The row counts below are queue rows; the alert counts are the raw Suricata events behind them.
 
-Reference run, recorded 2026-08-22 on Verdix v0.2.0 and Suricata 8.0.6, with no VirusTotal key configured:
+Reference run, recorded 2026-08-28 on the 0.32.15 + `think:false` build, Suricata 8.0.3 with the ET Open ruleset as of that date, and no VirusTotal key configured. This records what that run produced, not what every install will reproduce:
 
 | Signature | Sev | Rows | Alerts | Verdict |
 |---|---|---|---|---|
-| `ET MALWARE FormBook CnC Checkin (GET)` | S1 | 12 | 13 | `TP` 95% |
-| `SURICATA HTTP Response excessive header repetition` | S3 | 1 | 1 | `TP` 95% |
-| `ET INFO Observed DNS Query to .work TLD` | S2 | 1 | 5 | `FP` 40% |
-| `ET INFO Observed DNS Query to .cfd TLD` | S3 | 1 | 3 | `FP` 40% |
-| `ET DNS Query to a *.top domain - Likely Hostile` | S2 | 1 | 2 | `INVESTIGATE` 65% |
+| `ET MALWARE FormBook CnC Checkin (GET)` | S1 | 12 | 13 | `TP` |
+| `SURICATA HTTP Response excessive header repetition` | S3 | 1 | 1 | `TP` |
+| `ET INFO Observed DNS Query to .work TLD` | S2 | 1 | 5 | `INVESTIGATE` |
+| `ET INFO Observed DNS Query to .cfd TLD` | S3 | 1 | 3 | `FP` |
+| `ET DNS Query to a *.top domain - Likely Hostile` | S2 | 1 | 1-2 | `INVESTIGATE` |
 
-Three verdict classes spanning 40% to 95% confidence, with no API keys configured anywhere. Those five signature types are why the cut in step 8 is 600 packets and not fewer.
+Three verdict classes, with no API keys configured anywhere. Those five signature types are why the cut in step 8 is 600 packets and not fewer. The DNS-row verdicts and the `.top` alert count vary run to run — the OISF PPA serves different Suricata point releases across Ubuntu versions and the ET Open ruleset changes over time, so a different ruleset can move the `.work` and `.cfd` rows between false-positive and investigate. This run used 8.0.3; step 1's "8.0.3 or above" is the floor you install to. Neither variance is a sign something's wrong.
 
 Rows analyze a few at a time, so expect `queued` and `analyzing...` badges while the run works through the backlog. Nothing is wrong; the model handles one alert at a time.
 
@@ -217,7 +209,7 @@ Open any row and the evidence panel shows what the verdict was built from: the c
 
 ### Why your run may differ
 
-Verdix runs the model at temperature 0, so identical input produces an identical verdict every time. The input here is not fully identical between runs. GeoIP is embedded in the image and offline, but RDAP is a live query against the relevant TLD registry, and registries change their answers and sometimes time out.
+Verdix runs the model at temperature 0, which favors consistent output but does not guarantee byte-identical verdicts run to run: Ollama's prompt prefix cache is a known source of divergence on its own, observed in testing on the same machine with identical input and RDAP results. Input can also differ between runs — GeoIP is embedded in the image and offline, but RDAP is a live query against the relevant TLD registry, and registries change their answers and sometimes time out.
 
 When a source degrades, the ledger says so on the alert page, and a verdict built on a thinner ledger can differ from the table above. Treat that table as a dated snapshot of one run, not a guarantee.
 

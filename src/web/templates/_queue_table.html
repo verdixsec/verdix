@@ -45,7 +45,10 @@
         {% if row.app_proto %}<span style="color:#6b7587;"> &middot; {{ row.app_proto }}</span>{% endif %}
       </td>
       <td class="verdict-cell">
-        {% if row.verdict_category == 'likely_tp' %}
+        {% if row.verdict_mixed %}
+          <div><span class="badge badge-mixed">Mixed</span></div>
+          <div class="conf">{% for label, count in row.verdict_breakdown %}{{ count }}&times;{{ label }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</div>
+        {% elif row.verdict_category == 'likely_tp' %}
           <div><span class="badge badge-tp">TP</span></div>
           {% if row.confidence_score is not none %}<div class="conf">{{ (row.confidence_score * 100)|int }}%</div>{% endif %}
         {% elif row.verdict_category == 'suspicious_investigate' %}

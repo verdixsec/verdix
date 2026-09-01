@@ -7,12 +7,17 @@ asyncio_mode = "auto" is set in pyproject.toml — no @pytest.mark.asyncio neede
 """
 from __future__ import annotations
 
+import json
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import sqlalchemy as sa
 
 from src.infra.db.event_store import SQLiteEventStore
-from src.infra.db.session import close_db, init_db
+from src.infra.db.models import Alert
+from src.infra.db.operational_store import SQLiteOperationalStore
+from src.infra.db.session import close_db, get_session, init_db
 from src.interfaces.event_store import EventStore
 
 # ---------------------------------------------------------------------------
@@ -31,6 +36,11 @@ async def fresh_db() -> None:
 @pytest.fixture
 def store() -> SQLiteEventStore:
     return SQLiteEventStore()
+
+
+@pytest.fixture
+def op_store() -> SQLiteOperationalStore:
+    return SQLiteOperationalStore()
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +91,46 @@ def _make_eve_event(
         "event_type": event_type,
         "dns": {"type": "query", "rrname": "example.com"},
     }
+
+
+async def _seed_analyzed_alert(
+    store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    *,
+    llm_inputs: dict,
+    ingest_timestamp: str,
+    sig_id: int = 2000001,
+    src_ip: str = "10.0.0.1",
+    dest_ip: str = "8.8.8.8",
+) -> tuple[str, str]:
+    """Insert an alert, give it an 'analyzed' verdict with the given llm_inputs
+    shape, and backdate ingest_timestamp — insert_alert() always stamps 'now',
+    so tests that need deterministic relative ordering patch it directly."""
+    alert_id = await store.insert_alert(_make_alert(sig_id=sig_id, src_ip=src_ip, dest_ip=dest_ip))
+    async with get_session() as session:
+        await session.execute(
+            sa.update(Alert)
+            .where(Alert.alert_id == alert_id)
+            .values(ingest_timestamp=ingest_timestamp)
+        )
+    verdict_id = str(uuid.uuid4())
+    await op_store.record_verdict({
+        "verdict_id": verdict_id,
+        "alert_id": alert_id,
+        "verdict_category": "likely_fp",
+        "confidence_score": 0.5,
+        "reasoning": "test",
+        "contributing_facts": json.dumps([]),
+        "evidence_chain": json.dumps({}),
+        "model_version": "test",
+        "prompt_version": "test",
+        "llm_inputs": json.dumps(llm_inputs),
+        "llm_raw_output": json.dumps({}),
+        "latency_ms": 1200,
+        "is_current": True,
+    })
+    await op_store.link_verdict_to_alert(alert_id, verdict_id)
+    return alert_id, verdict_id
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +333,151 @@ async def test_delete_expired_returns_zero_when_nothing_to_delete(store: SQLiteE
     await store.insert_eve_event(_make_eve_event())  # recent
     deleted = await store.delete_expired_eve_events(retention_days=7)
     assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# find_recent_verdict_for_group — ADR-022 DECIDE 1 (one hop only)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_recent_verdict_for_group_skips_inherited_candidate(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """An inherited nearest-candidate is skipped in favor of an earlier produced
+    verdict within the same window — reaching past it is still one hop, since the
+    result points directly at a produced verdict, not at the inherited one."""
+    _, produced_verdict_id = await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"prompt": "...", "output_schema": {}},
+        ingest_timestamp=_ts(-1800),  # 30 min ago
+    )
+    await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"inherited_from": produced_verdict_id},
+        ingest_timestamp=_ts(-600),  # 10 min ago — the nearest group member
+    )
+
+    result = await store.find_recent_verdict_for_group(2000001, "10.0.0.1", "8.8.8.8", _ts())
+
+    assert result == produced_verdict_id
+
+
+async def test_find_recent_verdict_for_group_none_when_no_produced_source_in_window(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """None only when no produced verdict exists in the window at all — not merely
+    when the nearest candidate happens to be inherited."""
+    await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"inherited_from": str(uuid.uuid4())},
+        ingest_timestamp=_ts(-600),
+    )
+
+    result = await store.find_recent_verdict_for_group(2000001, "10.0.0.1", "8.8.8.8", _ts())
+
+    assert result is None
+
+
+async def test_find_recent_verdict_for_group_still_finds_produced_source(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """Baseline: a produced source within the window is still found (no regression)."""
+    _, produced_verdict_id = await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"prompt": "...", "output_schema": {}},
+        ingest_timestamp=_ts(-600),
+    )
+
+    result = await store.find_recent_verdict_for_group(2000001, "10.0.0.1", "8.8.8.8", _ts())
+
+    assert result == produced_verdict_id
+
+
+# ---------------------------------------------------------------------------
+# find_recent_verdict_for_group — ADR-022 Decision (window anchored to the
+# candidate alert's own ingest_timestamp, not to datetime.now(UTC))
+# ---------------------------------------------------------------------------
+
+
+async def test_find_recent_verdict_for_group_anchors_to_candidate_not_now(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """A and B are both ingested together, well outside a real 1-hour window
+    measured from the actual current time -- this is what a slow host or a
+    processing backlog looks like. Anchored to B's own ingest_timestamp
+    (also T0), A is well within window_hours of B regardless of how much
+    wall-clock time has passed since either arrived.
+
+    This is the regression case for the now()-anchored bug: run against the
+    pre-fix `since = datetime.now(UTC) - timedelta(hours=window_hours)` code,
+    this returns None, because `since` sits about an hour ahead of T0 and
+    Alert.ingest_timestamp (T0) < since. Confirmed by temporarily reverting
+    the anchor and re-running this test -- it fails as expected (None, not
+    A's verdict_id) against the pre-fix code.
+    """
+    t0 = _ts(-7200)  # both A and B ingested 2h before the real now()
+    _, produced_verdict_id = await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"prompt": "...", "output_schema": {}},
+        ingest_timestamp=t0,
+    )
+
+    result = await store.find_recent_verdict_for_group(2000001, "10.0.0.1", "8.8.8.8", t0)
+
+    assert result == produced_verdict_id
+
+
+async def test_find_recent_verdict_for_group_stale_source_rejected_by_real_gap(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """Guards against overshooting into inheriting from anything ever, once the
+    now()-anchored bug is fixed. Varies the true ingest-to-ingest gap between A
+    and the candidate directly -- both timestamps are real, fixed values, with
+    no reliance on how long ago either sits relative to the actual now() -- so
+    this independently exercises genuine staleness, which the pre-fix code
+    conflated with processing delay into a single now() reference."""
+    t0 = _ts(-3 * 3600)  # A ingested 3h before the real now()
+    await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"prompt": "...", "output_schema": {}},
+        ingest_timestamp=t0,
+    )
+    candidate_ts = _ts(-1 * 3600)  # candidate's own ingest_timestamp: 2h after A
+
+    result = await store.find_recent_verdict_for_group(
+        2000001, "10.0.0.1", "8.8.8.8", candidate_ts, window_hours=1,
+    )
+
+    assert result is None
+
+
+async def test_find_recent_verdict_for_group_excludes_source_after_candidate(
+    store: SQLiteEventStore, op_store: SQLiteOperationalStore,
+) -> None:
+    """ADR-022 implementation clarification, 2026-08-27: the window is
+    symmetric. A produced verdict ingested AFTER the candidate -- even well
+    inside window_hours -- is not a valid inheritance source. "Arrived within
+    an hour of each other" excludes a later arrival exactly as much as an
+    earlier one outside the window.
+
+    Confirmed failing against the pre-bound code (the query as of ADR-023's
+    FIFO commit, before this test's own commit added the upper bound): with
+    no upper bound, `Alert.ingest_timestamp >= since` alone is satisfied by
+    the later-arriving source, `ORDER BY ingest_timestamp DESC LIMIT 1` picks
+    it as the newest eligible row, and the pre-bound code returns its
+    verdict_id instead of None.
+    """
+    candidate_ts = _ts(-1800)  # candidate ingested 30 min ago
+    _, produced_verdict_id = await _seed_analyzed_alert(
+        store, op_store,
+        llm_inputs={"prompt": "...", "output_schema": {}},
+        ingest_timestamp=_ts(-600),  # source ingested 10 min ago -- AFTER the
+                                      # candidate, still inside the 1h window
+    )
+
+    result = await store.find_recent_verdict_for_group(
+        2000001, "10.0.0.1", "8.8.8.8", candidate_ts,
+    )
+
+    assert result is None
+    assert produced_verdict_id is not None  # sanity: the source really was seeded

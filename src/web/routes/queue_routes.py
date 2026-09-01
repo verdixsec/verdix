@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
@@ -135,6 +135,11 @@ async def get_queue_rows(request: Request, window: str = "24h", status: str = "a
 
 
 _STATUS_RANK = {"analyzed": 5, "analyzing": 4, "queued": 3, "failed": 2, "deferred": 1}
+_VERDICT_LABELS = {
+    "likely_tp": "TP",
+    "suspicious_investigate": "Investigate",
+    "likely_fp": "FP",
+}
 
 
 async def _build_queue_rows(alerts: list[dict], op_store) -> list[dict]:
@@ -148,6 +153,13 @@ async def _build_queue_rows(alerts: list[dict], op_store) -> list[dict]:
     30 alerts whose first member is analyzed shows no verdict because the rep is
     still queued. The fix: use any analyzed member's verdict for the group, and
     link to that member so the analyst lands on the full investigation view.
+
+    The grouping key can conflate alerts that are not actually the same entity
+    (e.g. distinct DNS queries sharing one resolver dst_ip) — see the inheritance
+    investigation, 2026-08-26. This function does not fix that key. It only
+    refuses to bubble a single category as the group's verdict when the group's
+    own analyzed members disagree, so the badge never asserts a judgement one
+    member didn't actually receive.
     """
     # Collect verdict info per alert
     verdict_map: dict[str, dict] = {}
@@ -187,7 +199,22 @@ async def _build_queue_rows(alerts: list[dict], op_store) -> list[dict]:
         # The worker processes oldest-first; if rep is still queued the verdict
         # would be invisible without this bubbling.
         analyzed = [m for m in members if m.get("verdict_id")]
+        verdict_mixed = False
+        verdict_breakdown: list[tuple[str, int]] = []
         if analyzed:
+            categories = [
+                (verdict_map.get(m["verdict_id"]) or {}).get("verdict_category")
+                for m in analyzed
+            ]
+            distinct_categories = {c for c in categories if c}
+            if len(distinct_categories) > 1:
+                # Members disagree — do not let one member's category stand in
+                # for the group. Show the split instead of picking a winner.
+                verdict_mixed = True
+                counts = Counter(c for c in categories if c)
+                verdict_breakdown = [
+                    (_VERDICT_LABELS.get(cat, cat), n) for cat, n in counts.most_common()
+                ]
             verdict_member = max(analyzed, key=lambda a: a.get("ingest_timestamp") or "")
             verdict = verdict_map.get(verdict_member.get("verdict_id") or "")
             link_id = verdict_member["alert_id"]
@@ -214,8 +241,14 @@ async def _build_queue_rows(alerts: list[dict], op_store) -> list[dict]:
             "event_timestamp": rep.get("event_timestamp"),
             "ingest_timestamp": rep.get("ingest_timestamp"),
             "status": group_status,
-            "verdict_category": verdict["verdict_category"] if verdict else None,
-            "confidence_score": verdict["confidence_score"] if verdict else None,
+            "verdict_category": (
+                None if verdict_mixed else (verdict["verdict_category"] if verdict else None)
+            ),
+            "confidence_score": (
+                None if verdict_mixed else (verdict["confidence_score"] if verdict else None)
+            ),
+            "verdict_mixed": verdict_mixed,
+            "verdict_breakdown": verdict_breakdown,
             "disposition_id": rep.get("disposition_id"),
             "attacker_ip": rep.get("attacker_role"),
             "victim_ip": rep.get("victim_role"),

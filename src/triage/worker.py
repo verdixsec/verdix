@@ -38,6 +38,7 @@ from src.enrichment.models import (
     IndicatorType,
 )
 from src.identity.models import IdentityFacts
+from src.infra.logging import bind_alert_context, clear_alert_context
 from src.infra.suricata_config.models import SuricataConfig
 from src.interfaces.event_store import EventStore
 from src.interfaces.llm_provider import LLMProvider
@@ -132,7 +133,27 @@ class TriageWorker:
 
     async def _process_alert(self, alert: dict[str, Any]) -> None:
         alert_id = alert["alert_id"]
-        log = logger.bind(alert_id=alert_id)
+        # Bind alert_id into structlog's contextvars (merged into every log
+        # line via the merge_contextvars processor, src/infra/logging/setup.py)
+        # so modules called deeper in the pipeline -- OllamaClient's retry
+        # logging in particular -- carry alert_id without needing it threaded
+        # through every function signature.
+        bind_alert_context(alert_id)
+        # signature_id/src_ip/dst_ip bound here so every line this alert emits
+        # (including verdict_produced/verdict_inherited below) carries its
+        # dedup group key — lets a load-test run's dequeue order and
+        # inheritance eligibility be reconstructed from logs alone, with no
+        # cross-reference to the alerts table.
+        log = logger.bind(
+            alert_id=alert_id,
+            signature_id=alert.get("signature_id"),
+            src_ip=alert.get("src_ip"),
+            dst_ip=alert.get("dst_ip"),
+        )
+        # INFO, not DEBUG: this is the processing-start marker used to
+        # reconstruct per-alert dequeue order. A load-test run should not
+        # need VX_LOG_LEVEL=DEBUG just to get this one line.
+        log.info("alert_dequeued")
 
         try:
             await self._event_store.update_alert_status(alert_id, "analyzing")
@@ -158,6 +179,7 @@ class TriageWorker:
                 alert.get("signature_id"),
                 alert.get("src_ip"),
                 alert.get("dst_ip"),
+                alert["ingest_timestamp"],
             )
             if source_verdict_id:
                 source = await self._operational_store.get_verdict(source_verdict_id)
@@ -253,6 +275,8 @@ class TriageWorker:
                 await self._event_store.update_alert_status(alert_id, "failed")
             except Exception:
                 pass
+        finally:
+            clear_alert_context()
 
     # ------------------------------------------------------------------
     # Identity helpers
