@@ -2,10 +2,9 @@
 
 # Verdix
 
-**Open-source AI triage for Suricata alerts — running entirely on your hardware.**
+**Open-source AI triage for Suricata alerts, running entirely on your hardware.**
 
-<!-- Screenshot: queue view showing analyzed alerts with TP/FP/suspicious verdicts -->
-<!-- Add: docs/images/queue.png -->
+![Verdix queue view: analyzed Suricata alerts, each with a true-positive, false-positive, or investigate verdict and a confidence score](docs/images/queue.png)
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
 [![Version: v0.3.0](https://img.shields.io/badge/version-v0.3.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.0)
@@ -32,7 +31,7 @@ For each Suricata alert, Verdix:
 1. Reads all related `eve.json` records from the same network flow: the flow record, DNS queries, HTTP requests, TLS handshakes, and file events correlated by `flow_id`
 2. Enriches the indicators: country and ASN from an embedded database (no internet required), internal hostnames via reverse DNS for your `HOME_NET` addresses, domain registration age and registrar via RDAP, and reputation via VirusTotal if you provide a free API key
 3. Reads your `suricata.yaml` to understand your `HOME_NET`, then assigns attacker and victim roles from the rule's explicit `target` declaration where the rule provides one, then rule metadata, then a mapping from the alert category combined with which side of the network each address sits on. When none of those gives a clear answer, Verdix marks the assignment ambiguous rather than guessing.
-4. Passes everything to a local LLM (Gemma 4, running in the sibling Docker container) which explains what the rule detected, what is actually happening in this specific alert, and recommends a verdict: *likely false positive*, *suspicious — investigate*, or *likely true positive*
+4. Passes everything to a local LLM (Gemma 4, running in the sibling Docker container) which explains what the rule detected, what is actually happening in this specific alert, and recommends a verdict: *likely false positive*, *suspicious, investigate*, or *likely true positive*
 5. Shows you the verdict with every piece of evidence it used: correlated records, enrichment results, rule explanation, role assignment, and a per-source ledger showing exactly what contributed and what was unavailable
 
 You accept the verdict or override it. Verdix never takes action on an alert autonomously.
@@ -44,26 +43,26 @@ You accept the verdict or override it. Verdix never takes action on an alert aut
 | | |
 |---|---|
 | **Hardware** | 32 GB RAM · 8 physical cores (16 vCPU) · 30 GB free disk space |
-| **GPU** | Not required. To enable: install the NVIDIA Container Toolkit and uncomment the GPU reservation block for the `llm` service in `docker-compose.yml` — Ollama then uses it automatically, bringing verdict time to under a minute |
+| **GPU** | Not required. To enable, install the NVIDIA Container Toolkit and uncomment the GPU block for the `llm` service in `docker-compose.yml`. Verdict time then drops to under a minute |
 | **Software** | Docker 24+ with the `docker compose` plugin · Suricata 8.x or newer running and producing `eve.json` |
 | **OS** | Ubuntu 22.04 LTS+, Debian 11+, RHEL 8+, Rocky Linux 8+, AlmaLinux 8+, or Fedora (current release, or the previous release), or equivalent, x86-64 only |
 | **Network** | Outbound HTTPS required for RDAP domain lookups · optional but recommended for VirusTotal · GeoIP works fully offline |
 
 **Capacity.** Verdix analyzes up to 300 alerts per day. Beyond that, alerts are stored and shown in the queue marked deferred, and do not receive a verdict. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for how the limit is counted and how to raise it.
 
-Disk space splits across two locations: Docker's image store and the model volume. See the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) for the breakdown and what to do if you relocate Docker storage.
+If Docker's storage location is short on space, the [Deployment Guide](docs/DEPLOYMENT.md#before-you-begin) covers moving it to a larger disk.
 
 ---
 
 ## Try it in an hour
 
-No Suricata deployment yet? [QUICKSTART.md](QUICKSTART.md) installs Suricata and Verdix on one throwaway Ubuntu box and walks you to a populated queue of verdicts on a public malware capture. Plan for 4 physical cores (8 vCPU) and 16 GB RAM: about 10-15 minutes to get running, then 40 minutes to a couple hours of unattended analysis depending on your hardware — the ~22 GB is what lands on disk, not what you wait on downloading.
+If you don't have Suricata yet, [QUICKSTART.md](QUICKSTART.md) installs Suricata and Verdix on one throwaway Ubuntu box and walks you to a populated queue of verdicts on a public malware capture. On 4 physical cores (8 vCPU) and 16 GB RAM, budget about an hour: 15 to 30 minutes to set up, then 30 minutes to an hour of unattended analysis depending on your hardware.
 
 ---
 
 ## Install
 
-Verdix runs as two Docker containers alongside your existing Suricata. Install is `docker compose up` once `.env` points at your `eve.json` and `suricata.yaml` directories. First run transfers ~15 GB (image + model) — about 90 seconds on a fast connection — and unpacks to ~22 GB on disk.
+Verdix runs as two Docker containers alongside your existing Suricata. Once `.env` points at your `eve.json` and `suricata.yaml` directories, install is `docker compose up`. The first run transfers about 15 GB and unpacks to ~22 GB on disk, which can take a few minutes depending on your connection.
 
 See the [Deployment Guide](docs/DEPLOYMENT.md) for same-host, NFS, and SMB topologies, Docker installation, and storage sizing. Full configuration reference: [`example.env`](example.env).
 
@@ -79,10 +78,9 @@ curl http://testmynids.org/uid/index.html
 ```
 This fires the `ET ATTACK_RESPONSE Id Check Returned User Id` rule and produces an alert within seconds. See [Testing with Sample Traffic](docs/DEPLOYMENT.md#testing-with-sample-traffic) for more realistic test traffic, including malware PCAPs.
 
-If something doesn't work, see the [Deployment Guide — Troubleshooting](docs/DEPLOYMENT.md#troubleshooting) section.
+If something doesn't work, see [Troubleshooting](docs/DEPLOYMENT.md#troubleshooting) in the Deployment Guide.
 
-<!-- Screenshot: per-alert investigation view showing verdict, enrichment ledger, and evidence chain -->
-<!-- Add: docs/images/alert.png -->
+![Verdix alert detail: role assignment, the enrichment-source ledger, and the AI verdict with its full reasoning for a FormBook command-and-control alert](docs/images/alert.png)
 
 ---
 
@@ -97,7 +95,7 @@ Before writing any product code, we built an independent evaluation harness and 
 | False-negative rate | **0.0%** |
 | Structured output reliability | **100%** |
 
-The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Accuracy was 78.47% on the development set and 81.13% on the held-out set. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
+The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
 
 Each entry carries a fixed set of threat-intelligence labels curated when the corpus was built. Most of these PCAPs are several years old and their indicators no longer return results from live VirusTotal, so the labels come from the IOCs the PCAP authors published alongside the captures. The harness renders them into the same prompt template the product uses. It makes no live VirusTotal, RDAP, or GeoIP calls, so these figures measure verdict quality given that context rather than the enrichment pipeline itself.
 
@@ -113,15 +111,15 @@ The evaluation harness ships in this repository under `eval/` and can be run aga
 
 ## This is early access
 
-Verdix v0.1 is Early Access. It does one thing well: triage individual Suricata alerts with a local LLM and show you the evidence. Use it alongside your existing workflow, not instead of it.
+Verdix is Early Access. It does one thing well: triage individual Suricata alerts with a local LLM and show you the evidence. Use it alongside your existing workflow, not instead of it.
 
-**Working well in v0.1:**
+**Working well today:**
 - Per-alert verdicts with full evidence chain: correlated EVE records, enrichment results, rule clause explanation, attacker/victim role assignment
 - GeoIP and ASN enrichment (offline, embedded), domain registration age via RDAP, VirusTotal reputation
 - Internal hostname resolution via reverse DNS (PTR records for `HOME_NET` addresses)
 - Disposition capture: accept the verdict or override it with a free-text reason
 
-**Coming in v1:**
+**On the roadmap:**
 - Multi-user authentication and Active Directory identity integration
 - Dashboard with team metrics and shift handoff notes
 - Environment knowledge: admin-curated facts that improve verdict context ("10.5.5.5 is the vulnerability scanner")
@@ -137,7 +135,7 @@ Feedback from early users shapes what gets built first. Use the feedback button 
 Verdix never modifies your Suricata configuration, SIEM, or network. Removing it is clean:
 
 ```bash
-# Stop containers — stored verdicts and dispositions are preserved on the Docker volume
+# Stop containers (stored verdicts and dispositions preserved on the Docker volume)
 docker compose down
 
 # Stop containers and delete all stored data
