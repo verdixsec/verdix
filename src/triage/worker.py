@@ -21,6 +21,7 @@ continues with the next alert — never crashes the process.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import uuid
@@ -54,6 +55,16 @@ _DEFAULT_DAILY_CAP = int(os.environ.get("VX_TRIAGE_DAILY_CAP", "300"))
 # Maximum indicators sent to VT/RDAP per alert to protect free-tier quota.
 _MAX_IPS = 2
 _MAX_DOMAINS = 3
+
+# Internal-only name suffixes. Domains under these are never extracted as
+# indicators, so they never reach VT or RDAP.
+_INTERNAL_DOMAIN_SUFFIXES = (
+    ".local", ".lan", ".internal", ".corp", ".home", ".home.arpa", ".localdomain",
+)
+
+# RFC 6598 shared address space (carrier-grade NAT). Python's ipaddress does
+# not class it as private or reserved, so it needs an explicit check.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
 
 
 class TriageWorker:
@@ -217,7 +228,7 @@ class TriageWorker:
             src_identity, dst_identity = await self._resolve_identities(raw_eve)
 
             # 5. Parallel enrichment.
-            indicators = _extract_indicators(raw_eve, correlated_events)
+            indicators = _extract_indicators(raw_eve, correlated_events, self._config)
             enrichment_pairs = await self._enrich_all(indicators)
 
             # 6. Build prompt.
@@ -319,11 +330,12 @@ class TriageWorker:
         self, indicator: Indicator
     ) -> list[tuple[Indicator, EnrichmentResult]]:
         if indicator.type is IndicatorType.IP:
-            # GeoIP runs on all IPs (returns "Private IP" for RFC1918 — useful topology context).
-            # VT has no data for private/reserved IPs and is skipped entirely — no ledger entry,
-            # because VT *is* configured; it simply doesn't apply to internal addresses.
+            # GeoIP runs on all IPs (local MMDB, no network call; returns "Private IP" for
+            # RFC1918 — useful topology context). VT is skipped for private, reserved, CGNAT
+            # and HOME_NET addresses — no ledger entry, because VT *is* configured; internal
+            # addresses are simply never sent out.
             geo = await self._lookup(self._geoip, indicator, source="geoip")
-            if not _is_public_ip(indicator.value):
+            if not _is_public_ip(indicator.value, self._config):
                 return [(indicator, geo)]
             vt = await self._lookup(self._vt, indicator, source="virustotal")
             return [(indicator, vt), (indicator, geo)]
@@ -359,21 +371,118 @@ async def _noop() -> None:
     return None
 
 
-def _is_public_ip(ip: str) -> bool:
-    """Return True only for globally routable IPs — skips VT/RDAP for private/reserved."""
-    import ipaddress
+def _is_public_ip(ip: str, config: SuricataConfig | None = None) -> bool:
+    """Return True only for IPs that may be sent to VT.
+
+    False for private, loopback, link-local, reserved, multicast and CGNAT
+    (100.64.0.0/10) addresses, and, when config is given, for any HOME_NET
+    address, including public ranges the customer owns.
+    """
     try:
         addr = ipaddress.ip_address(ip)
-        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast)
     except ValueError:
         return False
+    if (
+        addr.is_private or addr.is_loopback or addr.is_link_local
+        or addr.is_reserved or addr.is_multicast
+    ):
+        return False
+    if addr.version == 4 and addr in _CGNAT_NET:
+        return False
+    if config is not None and "HOME_NET" in config.membership_for_ip(ip):
+        return False
+    return True
+
+
+def _is_internal_domain_name(domain: str) -> bool:
+    """True when the name sits under an internal-only suffix (.local, .corp, ...)."""
+    name = domain.lower().rstrip(".")
+    return any(
+        name == suffix[1:] or name.endswith(suffix)
+        for suffix in _INTERNAL_DOMAIN_SUFFIXES
+    )
+
+
+def _dns_answer_ips(correlated_events: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Map each queried/answered name in the flow's dns events to its A/AAAA answers.
+
+    Handles every EVE shape seen so far: Suricata 8.x nested answers
+    (dns.answers[]), the grouped format (dns.grouped.A/AAAA), and per-record
+    answer events (dns.type == "answer" with flat rrname/rdata). Every IP
+    answer in an event is attributed to the event's query name as well as the
+    answer's own rrname, so a CNAME chain cannot hide a HOME_NET answer.
+    Non-IP rdata (CNAME targets, TXT, ...) is ignored.
+    """
+    answers: dict[str, set[str]] = {}
+
+    def _add(names: list[str], rdata: Any) -> None:
+        if not isinstance(rdata, str):
+            return
+        try:
+            ipaddress.ip_address(rdata)
+        except ValueError:
+            return
+        for name in names:
+            if name:
+                answers.setdefault(name.lower().rstrip("."), set()).add(rdata)
+
+    for event in correlated_events:
+        if event.get("event_type") != "dns":
+            continue
+        dns = event.get("dns") or {}
+        names: list[str] = [dns.get("rrname") or ""]
+        queries = dns.get("queries") or []
+        if isinstance(queries, dict):
+            queries = [queries]
+        if isinstance(queries, list):
+            names += [(q or {}).get("rrname") or "" for q in queries if isinstance(q, dict)]
+
+        _add(names, dns.get("rdata"))
+        for ans in dns.get("answers") or []:
+            if isinstance(ans, dict):
+                _add(names + [ans.get("rrname") or ""], ans.get("rdata"))
+        grouped = dns.get("grouped") or {}
+        if isinstance(grouped, dict):
+            for rrtype in ("A", "AAAA"):
+                for rdata in grouped.get(rrtype) or []:
+                    _add(names, rdata)
+    return answers
+
+
+def _server_ip(event: dict[str, Any]) -> str | None:
+    """Return the server endpoint of an http/tls event.
+
+    Suricata logs app-layer transactions client-to-server, so the server is
+    dest_ip. Every http/tls record in the eval corpus follows this, including
+    17 on high server ports, which is why port numbers are not used to guess
+    the side. An explicit direction of "to_client" flips it to src_ip.
+    """
+    if event.get("direction") == "to_client":
+        return event.get("src_ip")
+    return event.get("dest_ip")
 
 
 def _extract_indicators(
     raw_eve: dict[str, Any],
     correlated_events: list[dict[str, Any]],
+    config: SuricataConfig | None = None,
 ) -> list[Indicator]:
-    """Extract up to _MAX_IPS IP indicators and _MAX_DOMAINS domain indicators."""
+    """Extract up to _MAX_IPS IP indicators and _MAX_DOMAINS domain indicators.
+
+    Internal names are never returned as domain indicators: names under an
+    internal-only suffix and, when config is given, any name whose DNS answer
+    in the flow's dns events is a HOME_NET address, or any http.hostname /
+    tls.sni whose event's server IP is in HOME_NET. Skipped names do not
+    count toward _MAX_DOMAINS.
+    """
+    home_net_names: set[str] = set()
+    if config is not None:
+        home_net_names = {
+            name
+            for name, answer_ips in _dns_answer_ips(correlated_events).items()
+            if any("HOME_NET" in config.membership_for_ip(ip) for ip in answer_ips)
+        }
+
     ips: list[str] = []
     for field in ("src_ip", "dest_ip"):
         ip = raw_eve.get(field)
@@ -386,6 +495,9 @@ def _extract_indicators(
     for event in correlated_events:
         etype = event.get("event_type")
         domain: str | None = None
+        # Set only for http/tls, where the event's server endpoint is known.
+        # Not for dns: its dest_ip is the resolver, which is usually internal.
+        server_ip: str | None = None
         if etype == "dns":
             dns = event.get("dns") or {}
             # Suricata 7.x: flat dns.rrname; Suricata 8.x EVE v2: dns.queries[0].rrname
@@ -398,18 +510,29 @@ def _extract_indicators(
                     domain = queries.get("rrname", "")
         elif etype == "http":
             domain = (event.get("http") or {}).get("hostname") or ""
+            server_ip = _server_ip(event)
         elif etype == "tls":
             domain = (event.get("tls") or {}).get("sni") or ""
+            server_ip = _server_ip(event)
         if domain and "." in domain and domain not in domains and not domain.endswith(".arpa"):
             # http.hostname / tls.sni / dns.rrname may contain a bare IP address
             # (client connected directly to IP). Route it to the IP list rather
             # than sending it to VT's /domains/ endpoint (which returns 400 for IPs).
-            import ipaddress
+            # _is_public_ip() filters it in _enrich_one() like any other IP.
             try:
                 ipaddress.ip_address(domain)
                 if domain not in ips and len(ips) < _MAX_IPS:
                     ips.append(domain)
             except ValueError:
+                if _is_internal_domain_name(domain):
+                    continue
+                if domain.lower().rstrip(".") in home_net_names:
+                    continue
+                if (
+                    config is not None and server_ip
+                    and "HOME_NET" in config.membership_for_ip(server_ip)
+                ):
+                    continue
                 domains.append(domain)
         if len(domains) >= _MAX_DOMAINS:
             break

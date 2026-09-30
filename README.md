@@ -9,7 +9,7 @@ An open-source triage copilot for Suricata alerts, running entirely on your hard
 ![Verdix queue view: analyzed Suricata alerts, each with a true-positive, false-positive, or investigate verdict and a confidence score](docs/images/queue.png)
 
 [![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.3.0](https://img.shields.io/badge/version-v0.3.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.0)
+[![Version: v0.3.1](https://img.shields.io/badge/version-v0.3.1-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.1)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
