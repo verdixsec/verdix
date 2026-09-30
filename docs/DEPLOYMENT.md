@@ -18,7 +18,7 @@ Verdix needs direct access to Suricata's `eve.json`. Your topology depends on wh
 - **8 physical cores (16 vCPU) recommended, no GPU required.** The health screen counts physical cores, not vCPU, so a host sized by vCPU may show a cores warning and still run fine. Fewer cores work, but verdicts fall behind and Verdix reports queue depth when they do.
 
   A GPU with 12 GB or more VRAM drops verdict time to under a minute. Install the NVIDIA Container Toolkit and uncomment the GPU block under the `llm` service in `docker-compose.yml`. The Setup screen's GPU check runs from the `app` container, so it may still say "No GPU detected" after you enable acceleration; check `docker compose logs llm` for the real state.
-- **Outbound HTTPS** for RDAP domain lookups on every alert, and for VirusTotal if you configure a key. GeoIP runs fully offline; its database is embedded in the image.
+- **Outbound HTTPS** to `data.iana.org` for the RDAP bootstrap file, to TLD registries for RDAP lookups on public domains seen in an alert's flow, and to VirusTotal if you configure a key. GeoIP runs fully offline; its database is embedded in the image.
 
 **Daily capacity.** Verdix analyzes up to `VX_TRIAGE_DAILY_CAP` alerts per day (default 300). Alerts past the cap are stored as `deferred` and not analyzed, and Verdix does not pick them up on a later day. You can still open a deferred alert and record your own disposition. Raise `VX_TRIAGE_DAILY_CAP` if your hardware supports more throughput.
 
@@ -125,9 +125,9 @@ VX_SURICATA_CONFIG_DIR=/etc/suricata
 VX_VIRUSTOTAL_API_KEY=
 ```
 
-**Also recommended:** add a free VirusTotal API key. VirusTotal is a reputation service for indicators of compromise. Verdix checks whether the alert's IPs and domains are already known to VirusTotal, which can raise or lower the severity it assigns. Without a key, alerts still get a verdict and the ledger shows VirusTotal as not configured.
+**Also recommended:** add a free VirusTotal API key. VirusTotal is a reputation service for indicators of compromise. Verdix checks whether the alert's public IPs and domains are already known to VirusTotal, which can raise or lower the severity it assigns. Internal values are never sent to VirusTotal or RDAP: private, CGNAT (`100.64.0.0/10`) and `HOME_NET` addresses; names ending in `.local`, `.lan`, `.internal`, `.corp`, `.home`, `.home.arpa` or `.localdomain`; and names whose DNS answer or HTTP/TLS server in the alert's flow is a `HOME_NET` address. Without a key, alerts still get a verdict and the ledger shows VirusTotal as not configured.
 
-**Quota.** The free tier allows 500 requests per day. Each alert makes one to five lookups, and Verdix caches every result for 24 hours, so repeat indicators cost nothing. A busy first day with a cold cache can approach the limit; past it, Verdix serves the cached result and the ledger shows its age.
+**Quota.** The free tier allows 500 requests per day. Each alert makes up to five lookups (two IPs, three domains), and Verdix caches every result for 24 hours, so repeat indicators cost nothing. A busy first day with a cold cache can approach the limit; past it, Verdix serves the cached result and the ledger shows its age.
 
 Common path variants by Suricata installation method:
 
