@@ -508,7 +508,7 @@ class TestQueueRoute:
         app = _make_app()
         client = _logged_in_client(app)
         resp = client.get("/queue")
-        assert f"v{APP_VERSION}-early-access".encode() in resp.content
+        assert f"v{APP_VERSION}".encode() in resp.content
 
     def test_queue_window_param_accepted(self):
         app = _make_app()

@@ -8,8 +8,7 @@ An open-source triage copilot for Suricata alerts, running entirely on your hard
 
 ![Verdix queue view: analyzed Suricata alerts, each with a true-positive, false-positive, or investigate verdict and a confidence score](docs/images/queue.png)
 
-[![Status: Early Access](https://img.shields.io/badge/status-Early%20Access-orange)](https://github.com/verdixsec/verdix)
-[![Version: v0.3.1](https://img.shields.io/badge/version-v0.3.1-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.1)
+[![Version: v0.3.2](https://img.shields.io/badge/version-v0.3.2-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.2)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -103,9 +102,9 @@ The evaluation harness ships in this repository under `eval/` and can be run aga
 
 ---
 
-## This is early access
+## Scope
 
-Verdix is Early Access. It does one thing well: triage individual Suricata alerts with a local LLM and show you the evidence. Use it alongside your existing workflow, not instead of it.
+Verdix does one thing well: triage individual Suricata alerts with a local LLM and show you the evidence. Use it alongside your existing workflow, not instead of it.
 
 **Working well today:**
 - Per-alert verdicts with full evidence chain: correlated EVE records, enrichment results, rule clause explanation, attacker/victim role assignment
@@ -120,7 +119,7 @@ Verdix is Early Access. It does one thing well: triage individual Suricata alert
 - Environment knowledge: admin-curated facts that improve verdict context ("10.5.5.5 is the vulnerability scanner")
 - On-demand analysis of deferred alerts
 
-Feedback from early users shapes what gets built first. Use the feedback button in the top-right of the UI, or [open an issue](https://github.com/verdixsec/verdix/issues).
+User feedback shapes what gets built first. Use the feedback button in the top-right of the UI, or [open an issue](https://github.com/verdixsec/verdix/issues).
 
 ---
 

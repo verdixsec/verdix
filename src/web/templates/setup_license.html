@@ -21,7 +21,6 @@
   .wordmark { display: flex; align-items: center; gap: 9px; }
   .wordmark-mark { width: 22px; height: 22px; flex-shrink: 0; }
   .wordmark-text { font-family: 'Space Grotesk', 'Inter Tight', system-ui, sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.6px; color: #e4e7ec; line-height: 1; }
-  .ea-badge { font-size: 10px; font-weight: 500; color: #3C3489; background: #EEEDFE; border: 1px solid #CECBF6; padding: 3px 8px; border-radius: 8px; }
   .title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: #f5f7fa; margin-bottom: 6px; }
   .subtitle { color: #8b95a7; font-size: 13.5px; margin-bottom: 22px; }
   .license-box { background: #080b10; border: 1px solid #1a2030; border-radius: 7px; height: 320px; overflow-y: auto; padding: 20px 22px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: #b8c1d0; margin-bottom: 20px; }
@@ -72,7 +71,6 @@
         </svg>
         <span class="wordmark-text">verdix</span>
       </div>
-      <span class="ea-badge">Early Access</span>
     </div>
     <h1 class="title">Before You Begin</h1>
     <p class="subtitle">Please read and accept the Community License to continue.</p>
@@ -95,8 +93,8 @@
         <li>Remove or alter copyright notices or this license</li>
         <li>Sublicense, sell, or redistribute the Software</li>
       </ul>
-      <div class="clause-title">4. EARLY ACCESS</div>
-      <p>This is Early Access software provided for evaluation and operational use. Features may change or be removed. No guarantees of fitness for any particular purpose.</p>
+      <div class="clause-title">4. CHANGES</div>
+      <p>Features may change or be removed. No guarantees of fitness for any particular purpose.</p>
       <div class="clause-title">5. DATA HANDLING</div>
       <p>Alert content, IP addresses, and analyst dispositions never leave your network. Verdix sends nothing on its own. The only data that leaves your deployment is what you submit through the in-product feedback button — your feedback message and any context items you choose to include — or a data-deletion request. A random install ID is attached server-side to recognize repeated submissions from this deployment; it is not linked to you, your users, or your network data.</p>
       <div class="clause-title">6. NO WARRANTY</div>
@@ -154,7 +152,7 @@
     <span class="health-dot"></span>
     <span class="mono">Verdix</span>
   </div>
-  <div class="footer-right mono">v{{ app_version }}-early-access</div>
+  <div class="footer-right mono">v{{ app_version }}</div>
 </div>
 
 <script>
