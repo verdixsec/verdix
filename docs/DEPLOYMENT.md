@@ -1,6 +1,6 @@
 # Verdix — Deployment Guide
 
-> **Last updated:** 2026-08-21
+> **Last updated:** 2026-09-29
 
 Verdix needs direct access to Suricata's `eve.json`. Your topology depends on where Suricata runs relative to the Verdix application host: the same machine, a separate Linux host, or a Windows host or NAS. Go to the matching section below.
 

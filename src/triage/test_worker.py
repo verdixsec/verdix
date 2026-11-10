@@ -411,6 +411,122 @@ def test_extract_indicators_skipped_names_do_not_use_domain_cap() -> None:
     assert _domains(inds) == ["one.com", "two.com", "three.com"]
 
 
+# ---------------------------------------------------------------------------
+# The alert's own names come first, before names from correlated flow events
+# ---------------------------------------------------------------------------
+
+
+def _shared_dns_flow() -> list[dict]:
+    """Many unrelated DNS lookups share the alert's flow, ahead of the alert's own name."""
+    return [
+        _make_dns_event(1, "file.zip"),
+        _make_dns_event(1, "clip.mov"),
+        _make_dns_event(1, "array817.prod.do.dsp.mp.microsoft.com"),
+        _make_dns_event(1, "pool.minexmr.com"),
+        _make_dns_event(1, "wetransfer.com"),
+    ]
+
+
+def _dns_alert(*names: str) -> dict:
+    """Suricata 8.x alert record for a DNS request: dns.queries[]."""
+    return {
+        "event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "10.0.0.1",
+        "dns": {"version": 3, "type": "request",
+                "queries": [{"rrname": n, "rrtype": "A"} for n in names]},
+    }
+
+
+def test_extract_indicators_own_dns_name_on_shared_flow() -> None:
+    inds = _extract_indicators(_dns_alert("wetransfer.com"), _shared_dns_flow())
+    assert _domains(inds) == ["wetransfer.com", "file.zip", "clip.mov"]
+
+
+def test_extract_indicators_own_dns_all_questions_and_flat_rrname() -> None:
+    raw_eve = _dns_alert("one.example.com", "two.example.com")
+    assert _domains(_extract_indicators(raw_eve, _shared_dns_flow())) == [
+        "one.example.com", "two.example.com", "file.zip",
+    ]
+    flat = {"event_type": "alert", "src_ip": "10.0.0.5", "dns": {"rrname": "evil.example.com"}}
+    assert _domains(_extract_indicators(flat, _shared_dns_flow()))[0] == "evil.example.com"
+
+
+def test_extract_indicators_own_http_hostname() -> None:
+    raw_eve = {
+        "event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "185.220.101.45",
+        "http": {"hostname": "c2.example.com", "url": "/gate.php"},
+    }
+    inds = _extract_indicators(raw_eve, _shared_dns_flow(), _config_with_home_net("10.0.0.0/8"))
+    assert _domains(inds) == ["c2.example.com", "file.zip", "clip.mov"]
+
+
+def test_extract_indicators_own_tls_sni() -> None:
+    raw_eve = {
+        "event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "185.220.101.45",
+        "tls": {"sni": "c2.example.net"},
+    }
+    inds = _extract_indicators(raw_eve, _shared_dns_flow(), _config_with_home_net("10.0.0.0/8"))
+    assert _domains(inds) == ["c2.example.net", "file.zip", "clip.mov"]
+
+
+def test_extract_indicators_own_name_also_in_flow_not_duplicated() -> None:
+    inds = _extract_indicators(_dns_alert("clip.mov"), _shared_dns_flow())
+    assert _domains(inds) == ["clip.mov", "file.zip", "array817.prod.do.dsp.mp.microsoft.com"]
+
+
+def test_extract_indicators_own_internal_suffix_skipped_and_slot_refilled() -> None:
+    inds = _extract_indicators(_dns_alert("nas.local"), _shared_dns_flow())
+    assert _domains(inds) == ["file.zip", "clip.mov", "array817.prod.do.dsp.mp.microsoft.com"]
+
+
+def test_extract_indicators_own_dns_name_resolving_to_home_net_skipped() -> None:
+    """The alert's own DNS name is checked against the flow's dns answers."""
+    config = _config_with_home_net("10.0.0.0/8")
+    flow = [_make_dns_v3_answer(1, "intranet.acme.com", "10.20.30.40"), *_shared_dns_flow()]
+    inds = _extract_indicators(_dns_alert("intranet.acme.com"), flow, config)
+    assert _domains(inds) == ["file.zip", "clip.mov", "array817.prod.do.dsp.mp.microsoft.com"]
+
+
+def test_extract_indicators_own_http_on_home_net_server_skipped() -> None:
+    """The alert's own http.hostname is checked against the alert's server IP."""
+    config = _config_with_home_net("10.0.0.0/8")
+    raw_eve = {
+        "event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "10.20.30.40",
+        "http": {"hostname": "intranet.acme.com"},
+    }
+    inds = _extract_indicators(raw_eve, _shared_dns_flow(), config)
+    assert _domains(inds) == ["file.zip", "clip.mov", "array817.prod.do.dsp.mp.microsoft.com"]
+
+
+def test_extract_indicators_own_tls_to_client_alert_uses_src_as_server() -> None:
+    config = _config_with_home_net("10.0.0.0/8")
+    raw_eve = {
+        "event_type": "alert", "src_ip": "10.20.30.40", "dest_ip": "10.0.0.5",
+        "direction": "to_client", "tls": {"sni": "intranet.acme.com"},
+    }
+    inds = _extract_indicators(raw_eve, _shared_dns_flow(), config)
+    assert "intranet.acme.com" not in _domains(inds)
+
+
+def test_extract_indicators_own_bare_ip_hostname_routed_to_ips() -> None:
+    raw_eve = {
+        "event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "185.220.101.45",
+        "http": {"hostname": "185.220.101.45"},
+    }
+    inds = _extract_indicators(raw_eve, _shared_dns_flow())
+    assert [i.value for i in inds if i.type is IndicatorType.IP] == ["10.0.0.5", "185.220.101.45"]
+    assert _domains(inds) == ["file.zip", "clip.mov", "array817.prod.do.dsp.mp.microsoft.com"]
+
+
+def test_extract_indicators_no_own_name_unchanged() -> None:
+    """An alert with no dns/http/tls block gets exactly the flow-order result as before."""
+    raw_eve = _make_alert_eve(flow_id=1)
+    inds = _extract_indicators(raw_eve, _shared_dns_flow())
+    assert [i.value for i in inds] == [
+        "10.0.0.5", "185.220.101.45",
+        "file.zip", "clip.mov", "array817.prod.do.dsp.mp.microsoft.com",
+    ]
+
+
 def test_is_public_ip_rejects_cgnat() -> None:
     assert _is_public_ip("100.64.1.1") is False
     assert _is_public_ip("100.127.255.254") is False

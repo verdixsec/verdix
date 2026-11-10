@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import itertools
 import json
 import os
 import uuid
@@ -462,6 +463,50 @@ def _server_ip(event: dict[str, Any]) -> str | None:
     return event.get("dest_ip")
 
 
+def _alert_own_names(raw_eve: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """Names the alert record itself carries, as (name, server_ip) pairs.
+
+    Every DNS question (Suricata 7.x flat dns.rrname, Suricata 8.x
+    dns.queries[]), then http.hostname, then tls.sni. server_ip is the alert's
+    server endpoint for http/tls and None for dns, whose dest_ip is the resolver.
+    """
+    names: list[tuple[str, str | None]] = []
+    dns = raw_eve.get("dns") or {}
+    if isinstance(dns, dict):
+        names.append((dns.get("rrname") or "", None))
+        queries = dns.get("queries") or []
+        if isinstance(queries, dict):
+            queries = [queries]
+        if isinstance(queries, list):
+            names += [((q or {}).get("rrname") or "", None) for q in queries if isinstance(q, dict)]
+    server_ip = _server_ip(raw_eve)
+    names.append(((raw_eve.get("http") or {}).get("hostname") or "", server_ip))
+    names.append(((raw_eve.get("tls") or {}).get("sni") or "", server_ip))
+    return [(name, ip) for name, ip in names if name]
+
+
+def _correlated_name(event: dict[str, Any]) -> tuple[str, str | None]:
+    """The one candidate name of a correlated event, as (name, server_ip)."""
+    etype = event.get("event_type")
+    if etype == "dns":
+        dns = event.get("dns") or {}
+        # Suricata 7.x: flat dns.rrname; Suricata 8.x EVE v2: dns.queries[0].rrname
+        domain = dns.get("rrname") or ""
+        if not domain:
+            queries = dns.get("queries") or []
+            if isinstance(queries, list) and queries:
+                domain = (queries[0] or {}).get("rrname", "")
+            elif isinstance(queries, dict):
+                domain = queries.get("rrname", "")
+        # No server IP for dns: its dest_ip is the resolver, which is usually internal.
+        return domain, None
+    if etype == "http":
+        return (event.get("http") or {}).get("hostname") or "", _server_ip(event)
+    if etype == "tls":
+        return (event.get("tls") or {}).get("sni") or "", _server_ip(event)
+    return "", None
+
+
 def _extract_indicators(
     raw_eve: dict[str, Any],
     correlated_events: list[dict[str, Any]],
@@ -469,11 +514,16 @@ def _extract_indicators(
 ) -> list[Indicator]:
     """Extract up to _MAX_IPS IP indicators and _MAX_DOMAINS domain indicators.
 
+    Domain candidates come from the alert record first (its DNS questions,
+    http.hostname, tls.sni), then from correlated events in order. On a shared
+    flow the alert's own name, possibly the C2 domain, is therefore always
+    looked up, whatever else the flow carries.
+
     Internal names are never returned as domain indicators: names under an
     internal-only suffix and, when config is given, any name whose DNS answer
     in the flow's dns events is a HOME_NET address, or any http.hostname /
-    tls.sni whose event's server IP is in HOME_NET. Skipped names do not
-    count toward _MAX_DOMAINS.
+    tls.sni whose server IP is in HOME_NET. Skipped names do not count toward
+    _MAX_DOMAINS.
     """
     home_net_names: set[str] = set()
     if config is not None:
@@ -492,28 +542,10 @@ def _extract_indicators(
             break
 
     domains: list[str] = []
-    for event in correlated_events:
-        etype = event.get("event_type")
-        domain: str | None = None
-        # Set only for http/tls, where the event's server endpoint is known.
-        # Not for dns: its dest_ip is the resolver, which is usually internal.
-        server_ip: str | None = None
-        if etype == "dns":
-            dns = event.get("dns") or {}
-            # Suricata 7.x: flat dns.rrname; Suricata 8.x EVE v2: dns.queries[0].rrname
-            domain = dns.get("rrname") or ""
-            if not domain:
-                queries = dns.get("queries") or []
-                if isinstance(queries, list) and queries:
-                    domain = (queries[0] or {}).get("rrname", "")
-                elif isinstance(queries, dict):
-                    domain = queries.get("rrname", "")
-        elif etype == "http":
-            domain = (event.get("http") or {}).get("hostname") or ""
-            server_ip = _server_ip(event)
-        elif etype == "tls":
-            domain = (event.get("tls") or {}).get("sni") or ""
-            server_ip = _server_ip(event)
+    candidates = itertools.chain(
+        _alert_own_names(raw_eve), (_correlated_name(e) for e in correlated_events),
+    )
+    for domain, server_ip in candidates:
         if domain and "." in domain and domain not in domains and not domain.endswith(".arpa"):
             # http.hostname / tls.sni / dns.rrname may contain a bare IP address
             # (client connected directly to IP). Route it to the IP list rather
