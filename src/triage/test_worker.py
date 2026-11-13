@@ -8,16 +8,19 @@ asyncio_mode = "auto" — no @pytest.mark.asyncio needed.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
 from structlog.contextvars import get_contextvars, merge_contextvars
 from structlog.testing import capture_logs
 
+from src.domain.flow_context import build_flow_context
 from src.enrichment.models import (
     EnrichmentResult,
     EnrichmentStatus,
@@ -29,6 +32,8 @@ from src.infra.db.operational_store import SQLiteOperationalStore
 from src.infra.db.session import close_db, get_session, init_db
 from src.infra.suricata_config.models import SuricataConfig
 from src.llm.models import LLMResponse
+from src.llm.test_prompt_builder import _pin_flow
+from src.triage import worker as worker_module
 from src.triage.cleanup import EveCleanupTask
 from src.triage.worker import TriageWorker, _extract_indicators, _is_public_ip
 
@@ -196,12 +201,16 @@ def _config_with_home_net(*cidrs: str) -> SuricataConfig:
 
 
 def _make_tls_event(flow_id: int, sni: str, **endpoints: str) -> dict:
-    return {"flow_id": flow_id, "event_type": "tls", "tls": {"sni": sni}, **endpoints}
+    return {
+        "flow_id": flow_id, "timestamp": datetime.now(UTC).isoformat(),
+        "event_type": "tls", "tls": {"sni": sni}, **endpoints,
+    }
 
 
 def _make_http_event(flow_id: int, hostname: str, **endpoints: str) -> dict:
     return {
-        "flow_id": flow_id, "event_type": "http", "http": {"hostname": hostname}, **endpoints,
+        "flow_id": flow_id, "timestamp": datetime.now(UTC).isoformat(),
+        "event_type": "http", "http": {"hostname": hostname}, **endpoints,
     }
 
 
@@ -209,6 +218,7 @@ def _make_dns_v3_answer(flow_id: int, domain: str, *rdata: str) -> dict:
     """Suricata 8.x (dns.version 3) shape: query name and answers nested."""
     return {
         "flow_id": flow_id,
+        "timestamp": datetime.now(UTC).isoformat(),
         "event_type": "dns",
         "dns": {
             "version": 3,
@@ -976,3 +986,101 @@ async def test_cleanup_preserves_recent_events(
     task = EveCleanupTask(event_store, retention_days=7)
     deleted = await task.run_once()
     assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: correlated-context selection by prompt version
+# ---------------------------------------------------------------------------
+
+# Captured from the pre-v7 worker code path processing _pin_flow().
+_V6_WORKER_PROMPT_SHA256 = "a0cb4eae2d15e7f3b2d9b79112cf793eb34b50a2eaebddcb2604cd4877478189"
+_V6_WORKER_CORRELATED_SHA256 = "242f8237a2998a5e34857e83ececcd5c9974cbc777cd3ffe5a0163c0a82ea326"
+
+
+async def _run_pin_flow(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    llm: MagicMock,
+    config: SuricataConfig,
+    **worker_kwargs: Any,
+) -> tuple[str, list[dict], list[dict]]:
+    """Process _pin_flow()'s alert; return (prompt, evidence-chain events, indicator input)."""
+    alert, flow, _ = _pin_flow()
+    await event_store.insert_alert(alert, status="queued")
+    for ev in flow:  # includes the alert's own eve_events row, as the indexer writes it
+        await event_store.insert_eve_event(ev)
+    worker = TriageWorker(
+        event_store=event_store, operational_store=op_store, llm=llm,
+        suricata_config=config, **worker_kwargs,
+    )
+    seen: dict[str, list[dict]] = {}
+    real = worker_module._extract_indicators
+
+    def spy(raw: dict, correlated: list[dict], cfg: SuricataConfig | None = None) -> list:
+        seen["correlated"] = correlated
+        return real(raw, correlated, cfg)
+
+    row = (await event_store.query_alerts(status="queued", limit=1))[0]
+    with patch.object(worker_module, "_extract_indicators", spy):
+        await worker._process_alert(row)
+    verdict = await op_store.get_current_verdict_for_alert(row["alert_id"])
+    assert verdict is not None
+    chain = json.loads(verdict["evidence_chain"])
+    return llm.complete.call_args[0][0], chain["correlated_events"], seen["correlated"]
+
+
+def _sha(value: object) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+async def test_v6_worker_behaviour_unchanged(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    """Under verdict_v6 the prompt, indicator input and evidence chain match pre-ADR-025."""
+    prompt, chain_events, indicator_input = await _run_pin_flow(
+        event_store, op_store, mock_llm, suricata_config, context_delay_seconds=5,
+        prompt_version="verdict_v6",
+    )
+    assert _sha(prompt) == _V6_WORKER_PROMPT_SHA256
+    assert _sha(chain_events) == _V6_WORKER_CORRELATED_SHA256
+    assert indicator_input == chain_events
+    assert len(chain_events) == 10  # whole flow, the alert's own row included
+
+
+async def test_v7_worker_uses_bounded_self_excluded_selection(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    prompt, chain_events, indicator_input = await _run_pin_flow(
+        event_store, op_store, mock_llm, suricata_config, prompt_version="verdict_v7",
+    )
+    alert, flow, _ = _pin_flow()
+    expected = build_flow_context(alert, flow, 30).selected
+    assert chain_events == expected
+    assert indicator_input == expected
+    assert alert not in chain_events
+    assert all("/late" not in json.dumps(e) for e in chain_events)
+    assert "## THIS TRANSACTION" in prompt
+    assert "CORRELATED FLOW CONTEXT" not in prompt
+    assert mock_llm.complete.call_args.kwargs["prompt_version"] == "verdict_v7"
+
+
+async def test_v7_worker_passes_configured_delay(
+    event_store: SQLiteEventStore,
+    op_store: SQLiteOperationalStore,
+    mock_llm: MagicMock,
+    suricata_config: SuricataConfig,
+) -> None:
+    """The /late request sits 115 s after the alert: in with a 120 s delay, out with 30 s."""
+    prompt, chain_events, _ = await _run_pin_flow(
+        event_store, op_store, mock_llm, suricata_config,
+        prompt_version="verdict_v7", context_delay_seconds=120,
+    )
+    assert any("/late" in json.dumps(e) for e in chain_events)
+    assert "c2.example.net/late" in prompt

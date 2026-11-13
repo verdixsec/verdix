@@ -41,6 +41,13 @@ class CorpusEntry(BaseModel):
     # predate these fields still validate with both as None).
     source: str | None = None
     split: str | None = None
+    # Suricata 8 corpus (schema 2.0): every EVE record on the alert's flow_id,
+    # the alert's own record included and stats records excluded, as the
+    # worker's EventStore lookup returns them. When set, the eval pipeline
+    # renders from it the way the worker does and ignores correlated_events.
+    flow_events: list[dict[str, Any]] | None = None
+    pcap_sha256: str | None = None
+    provenance: dict[str, Any] | None = None
 
     @field_validator("correlated_events", mode="before")
     @classmethod

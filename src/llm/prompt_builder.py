@@ -25,10 +25,16 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from src.domain.flow_context import FlowContext, build_flow_context
 from src.enrichment.models import EnrichmentResult, EnrichmentStatus, Indicator, IndicatorType
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-_DEFAULT_VERSION = "verdict_v6"
+_DEFAULT_VERSION = "verdict_v7"
+
+# Prompt versions that render the two-section flow context of ADR-025 (THIS
+# TRANSACTION / OTHER ACTIVITY ON THIS FLOW). Earlier versions render the flat
+# correlated_events list, and the worker feeds them exactly what it always has.
+FLOW_CONTEXT_VERSIONS = frozenset({"verdict_v7"})
 
 
 def build_enrichment_context(
@@ -148,6 +154,7 @@ class PromptBuilder:
         enrichment_context: list[dict[str, Any]] | None = None,
         src_hostname: str | None = None,
         dst_hostname: str | None = None,
+        flow_context: FlowContext | None = None,
     ) -> str:
         """Render the verdict prompt and return it as a string.
 
@@ -160,15 +167,28 @@ class PromptBuilder:
             src_hostname:      Resolved hostname for src_ip (reverse DNS); shown
                                as "hostname (IP)" in the prompt when present.
             dst_hostname:      Resolved hostname for dest_ip; same format.
+            flow_context:      Output of build_flow_context() for this alert. Read
+                               only by FLOW_CONTEXT_VERSIONS templates. When one of
+                               those renders without it, it is built here from
+                               correlated_events with the default 30 s delay.
+                               Earlier templates ignore it.
         """
         template = self._env.get_template(f"{self.prompt_version}.j2")
+        if flow_context is None and self.uses_flow_context:
+            flow_context = build_flow_context(alert, correlated_events or [])
         return template.render(
             alert=alert,
             correlated_events=correlated_events or [],
             enrichment_context=enrichment_context or [],
             src_hostname=src_hostname,
             dst_hostname=dst_hostname,
+            flow_context=flow_context,
         )
+
+    @property
+    def uses_flow_context(self) -> bool:
+        """True when this version renders the ADR-025 two-section flow context."""
+        return self.prompt_version in FLOW_CONTEXT_VERSIONS
 
 
 # ---------------------------------------------------------------------------

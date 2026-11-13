@@ -3,8 +3,11 @@
 """Tests for PromptBuilder and enrichment context helpers."""
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
+from src.domain.flow_context import build_flow_context
 from src.enrichment.maxmind.client import _SOURCE as _GEOIP_SOURCE
 from src.enrichment.models import (
     EnrichmentResult,
@@ -16,6 +19,7 @@ from src.enrichment.models import (
 from src.enrichment.rdap.client import _SOURCE as _RDAP_SOURCE
 from src.enrichment.virustotal.client import _SOURCE as _VT_SOURCE
 from src.llm.prompt_builder import (
+    _PROMPTS_DIR,
     PromptBuilder,
     build_enrichment_context,
     eval_enrichment_context_from_hits,
@@ -644,7 +648,7 @@ class TestPromptBuilder:
         assert "evil.example.com" in prompt
 
     def test_correlated_alert_rendered(self, minimal_alert):
-        builder = PromptBuilder()
+        builder = PromptBuilder("verdict_v6")  # v6 flat CORRELATED section
         co_alert = {
             "event_type": "alert",
             "alert": {
@@ -659,13 +663,13 @@ class TestPromptBuilder:
         assert "CnC Beacon" in prompt
 
     def test_no_correlated_shows_none_message(self, minimal_alert):
-        builder = PromptBuilder()
+        builder = PromptBuilder("verdict_v6")  # v6 flat CORRELATED section
         prompt = builder.build(alert=minimal_alert, correlated_events=[])
         assert "No correlated context events" in prompt
 
     def test_prompt_version_attribute(self):
         builder = PromptBuilder()
-        assert builder.prompt_version == "verdict_v6"
+        assert builder.prompt_version == "verdict_v7"
 
     def test_custom_prompt_version_raises_on_missing_template(self):
         import jinja2
@@ -774,3 +778,275 @@ class TestDnsRendering:
         prompt = builder.build(alert=minimal_alert, correlated_events=[co_dns])
         assert "gone.example.com" in prompt
         assert "NXDOMAIN" in prompt
+
+# ---------------------------------------------------------------------------
+# ADR-025: v6 pin and verdict_v7 flow context
+# ---------------------------------------------------------------------------
+
+
+def _pin_flow() -> tuple[dict, list[dict], list[dict]]:
+    """A fixed alert, its whole flow (alert's own row included) and enrichment."""
+    base = {
+        "flow_id": 777, "src_ip": "10.0.0.5", "src_port": 50123,
+        "dest_ip": "203.0.113.10", "dest_port": 80, "proto": "TCP",
+    }
+    alert = {
+        **base, "timestamp": "2026-11-09T10:00:05.000000+0000", "event_type": "alert",
+        "app_proto": "http", "tx_id": 1,
+        "alert": {"signature_id": 2000001, "signature": "ET MALWARE Test Checkin",
+                  "category": "A Network Trojan was Detected", "severity": 1},
+        "http": {"hostname": "c2.example.net", "url": "/gate.php", "http_method": "POST",
+                 "http_user_agent": "Mozilla/4.0", "status": 200},
+        "flow": {"start": "2026-11-09T10:00:00.000000+0000"},
+    }
+    flow = [
+        {**base, "timestamp": "2026-11-09T10:00:00.100000+0000", "event_type": "dns",
+         "dest_port": 53, "proto": "UDP",
+         "dns": {"version": 3, "type": "request", "tx_id": 0, "id": 4242,
+                 "queries": [{"rrname": "c2.example.net", "rrtype": "A"}]}},
+        {**base, "timestamp": "2026-11-09T10:00:00.200000+0000", "event_type": "dns",
+         "dest_port": 53, "proto": "UDP",
+         "dns": {"version": 3, "type": "response", "tx_id": 1, "id": 4242, "rcode": "NOERROR",
+                 "queries": [{"rrname": "c2.example.net", "rrtype": "A"}],
+                 "answers": [{"rrname": "c2.example.net", "rrtype": "A",
+                              "rdata": "203.0.113.10"}]}},
+        {**base, "timestamp": "2026-11-09T10:00:01.000000+0000", "event_type": "http",
+         "tx_id": 0, "http": {"hostname": "c2.example.net", "url": "/", "http_method": "GET",
+                              "http_user_agent": "Mozilla/4.0", "status": 200}},
+        dict(alert),
+        {**base, "timestamp": "2026-11-09T10:00:05.000100+0000", "event_type": "http",
+         "tx_id": 1, "http": {"hostname": "c2.example.net", "url": "/gate.php",
+                              "http_method": "POST", "http_user_agent": "Mozilla/4.0",
+                              "status": 200}},
+        {**base, "timestamp": "2026-11-09T10:00:06.000000+0000", "event_type": "alert",
+         "alert": {"signature_id": 2000002, "signature": "ET INFO Co Alert",
+                   "category": "Misc activity", "severity": 3}},
+        {**base, "timestamp": "2026-11-09T10:00:07.000000+0000", "event_type": "fileinfo",
+         "fileinfo": {"filename": "/gate.php", "size": 12}},
+        {**base, "timestamp": "2026-11-09T10:00:08.000000+0000", "event_type": "tls",
+         "dest_port": 443, "tls": {"sni": "cdn.example.org", "subject": "CN=cdn.example.org"}},
+        {**base, "timestamp": "2026-11-09T10:02:00.000000+0000", "event_type": "http",
+         "tx_id": 2, "http": {"hostname": "c2.example.net", "url": "/late", "http_method": "GET",
+                              "status": 404}},
+        {**base, "timestamp": "2026-11-09T10:05:00.000000+0000", "event_type": "flow",
+         "flow": {"bytes_toserver": 1000, "bytes_toclient": 2000}},
+    ]
+    enrichment = [{
+        "type": "domain", "indicator": "c2.example.net", "source": "VirusTotal",
+        "status": "contributed", "summary": "15/72 vendors flagged malicious",
+        "label": "Confirmed malicious — 15/72 vendors", "vt_malicious": 15, "vt_total": 72,
+        "cached": False, "cache_age_seconds": None,
+    }]
+    return alert, flow, enrichment
+
+
+# Captured from the pre-v7 code path rendering _pin_flow().
+_V6_PIN_PROMPT_SHA256 = "945f9bce5f56051246bca3bf2acdd52963626aae789016c5c57b3d859fec01ab"
+_V6_TEMPLATE_SHA256 = "03836dff3879d9eb5198bed74cfd6e119d658d253687e0ffc265d8aa1f74513e"
+
+
+class TestV6Unchanged:
+    def test_v6_template_bytes_unchanged(self):
+        raw = (_PROMPTS_DIR / "verdict_v6.j2").read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(raw).hexdigest() == _V6_TEMPLATE_SHA256
+
+    def test_v6_output_unchanged(self):
+        alert, flow, enrichment = _pin_flow()
+        prompt = PromptBuilder("verdict_v6").build(
+            alert=alert, correlated_events=flow, enrichment_context=enrichment,
+            src_hostname="ws01.corp",
+        )
+        assert hashlib.sha256(prompt.encode()).hexdigest() == _V6_PIN_PROMPT_SHA256
+
+    def test_v6_ignores_flow_context(self):
+        alert, flow, enrichment = _pin_flow()
+        builder = PromptBuilder("verdict_v6")
+        assert not builder.uses_flow_context
+        plain = builder.build(alert=alert, correlated_events=flow, enrichment_context=enrichment)
+        with_ctx = builder.build(
+            alert=alert, correlated_events=flow, enrichment_context=enrichment,
+            flow_context=build_flow_context(alert, flow, 30),
+        )
+        assert plain == with_ctx
+
+
+def _v7(alert: dict, flow: list[dict], **kw) -> str:
+    return PromptBuilder("verdict_v7").build(
+        alert=alert, flow_context=build_flow_context(alert, flow, 30), **kw
+    )
+
+
+def _section(prompt: str, heading: str) -> str:
+    start = prompt.index(f"## {heading}")
+    return prompt[start:prompt.index("---", start)]
+
+
+class TestV7FlowContext:
+    def test_two_sections_replace_correlated_context(self):
+        alert, flow, _ = _pin_flow()
+        prompt = _v7(alert, flow)
+        assert "## THIS TRANSACTION" in prompt
+        assert "## OTHER ACTIVITY ON THIS FLOW" in prompt
+        assert "CORRELATED FLOW CONTEXT" not in prompt
+
+    def test_transaction_section_holds_the_alerts_own_request(self):
+        alert, flow, _ = _pin_flow()
+        tx = _section(_v7(alert, flow), "THIS TRANSACTION")
+        assert 'http: POST c2.example.net/gate.php (200) UA="Mozilla/4.0"' in tx
+        assert "GET c2.example.net/ " not in tx
+
+    def test_other_section_lists_siblings_co_alerts_and_other_types(self):
+        alert, flow, _ = _pin_flow()
+        other = _section(_v7(alert, flow), "OTHER ACTIVITY ON THIS FLOW")
+        assert 'http: GET c2.example.net/ (200) UA="Mozilla/4.0"' in other
+        assert "CO-ALERT: ET INFO Co Alert (SID 2000002)" in other
+        assert "dns: c2.example.net A -> 203.0.113.10 [NOERROR], 2 records" in other
+        assert "tls: SNI=cdn.example.org subject=CN=cdn.example.org" in other
+        assert "[fileinfo]" in other
+
+    def test_http_line_without_user_agent_has_no_ua_field(self):
+        alert, flow, _ = _pin_flow()
+        alert["tx_id"] = 99
+        no_ua = {**flow[2], "tx_id": 98, "http": {**flow[2]["http"], "url": "/x"}}
+        del no_ua["http"]["http_user_agent"]
+        other = _section(_v7(alert, [no_ua]), "OTHER ACTIVITY ON THIS FLOW")
+        assert "http: GET c2.example.net/x (200)\n" in other
+
+    def test_alert_itself_and_out_of_window_events_absent(self):
+        alert, flow, _ = _pin_flow()
+        prompt = _v7(alert, flow)
+        assert "CO-ALERT: ET MALWARE Test Checkin" not in prompt
+        assert "/late" not in prompt
+        assert "bytes_toserver=1000" not in prompt  # flow record logged at timeout
+
+    def test_identical_co_alerts_render_with_count(self):
+        alert, flow, _ = _pin_flow()
+        dup = next(e for e in flow if e.get("alert", {}).get("signature_id") == 2000002)
+        prompt = _v7(alert, [*flow, dict(dup), dict(dup)])
+        assert (
+            "CO-ALERT: ET INFO Co Alert (SID 2000002) | Category: Misc activity"
+            " | Severity: 3 (x3)"
+        ) in prompt
+
+    def test_no_details_note(self):
+        alert, flow, _ = _pin_flow()
+        for key in ("tx_id", "http"):
+            alert.pop(key)
+        tx = _section(_v7(alert, flow), "THIS TRANSACTION")
+        assert "The alert carries no transaction details." in tx
+
+    def test_single_transaction_fallback_note(self):
+        alert, flow, _ = _pin_flow()
+        for key in ("tx_id", "http"):
+            alert.pop(key)
+        only = [e for e in flow if e.get("tx_id") == 0]
+        tx = _section(_v7(alert, only), "THIS TRANSACTION")
+        assert "this is the flow's only HTTP transaction" in tx
+        assert "GET c2.example.net/ (200)" in tx
+
+    def test_no_record_in_window_note(self):
+        alert, flow, _ = _pin_flow()
+        flow = [e for e in flow if e.get("tx_id") != 1]
+        tx = _section(_v7(alert, flow), "THIS TRANSACTION")
+        assert "No transaction record for this alert was logged within the context window." in tx
+
+    def test_no_record_note_for_transaction_protocol(self):
+        # A DNS alert whose response record is outside the window: a record could
+        # exist, so the wording says none was logged.
+        alert = {
+            "timestamp": "2026-11-09T10:00:00.000000+0000", "flow_id": 7,
+            "event_type": "alert", "app_proto": "dns",
+            "alert": {
+                "signature_id": 1, "signature": "ET DNS Test", "category": "x", "severity": 2,
+            },
+            "dns": {"id": 4, "queries": [{"rrname": "a.example.net", "rrtype": "A"}]},
+        }
+        tx = _section(_v7(alert, []), "THIS TRANSACTION")
+        assert "No transaction record for this alert was logged within the context window." in tx
+        assert "produces no transaction records" not in tx
+
+    def test_no_transaction_protocol_note(self):
+        # Raw TCP, app_proto failed or absent: no transaction record can exist.
+        for app_proto in ("failed", None, "smb"):
+            alert = {
+                "timestamp": "2026-11-09T10:00:00.000000+0000", "flow_id": 7,
+                "event_type": "alert", "proto": "TCP",
+                "alert": {
+                    "signature_id": 1, "signature": "ET TEST", "category": "x", "severity": 2,
+                },
+            }
+            if app_proto is not None:
+                alert["app_proto"] = app_proto
+            tx = _section(_v7(alert, []), "THIS TRANSACTION")
+            assert "This alert's protocol produces no transaction records." in tx
+            assert "within the context window" not in tx
+
+    def test_empty_flow_note(self):
+        alert, _, _ = _pin_flow()
+        assert "No other activity on this flow." in _v7(alert, [])
+
+    def test_names_cap_and_more_count_render(self):
+        alert, _, _ = _pin_flow()
+        names = [
+            {"timestamp": f"2026-11-09T10:00:01.{i:06d}+0000", "event_type": "tls",
+             "flow_id": 777, "tls": {"sni": f"n{i:02d}.example.org"}}
+            for i in range(23)
+        ]
+        prompt = _v7(alert, names)
+        assert "(3 more names on this flow not shown)" in prompt
+        assert "n19.example.org" in prompt
+        assert "n20.example.org" not in prompt
+
+    def test_http_per_host_cap_renders_more_count(self):
+        alert, _, _ = _pin_flow()
+        reqs = [
+            {"timestamp": f"2026-11-09T10:00:01.{i:06d}+0000", "event_type": "http",
+             "flow_id": 777, "tx_id": 10 + i,
+             "http": {"hostname": "c2.example.net", "url": f"/p{i}", "http_method": "GET"}}
+            for i in range(8)
+        ]
+        assert "(3 more HTTP requests to c2.example.net)" in _v7(alert, reqs)
+
+    def test_missing_keys_do_not_crash(self):
+        alert = {"timestamp": "2026-11-09T10:00:00+00:00", "event_type": "alert", "alert": {}}
+        sparse = [
+            {"timestamp": "2026-11-09T10:00:01+00:00", "event_type": "alert"},
+            {"timestamp": "2026-11-09T10:00:01+00:00", "event_type": "flow"},
+            {"timestamp": "2026-11-09T10:00:01+00:00", "event_type": "http", "http": {}},
+            {"timestamp": "2026-11-09T10:00:01+00:00", "event_type": "dns", "dns": {}},
+        ]
+        assert "## OTHER ACTIVITY ON THIS FLOW" in _v7(alert, sparse)
+
+    def test_output_is_deterministic_whatever_the_input_order(self):
+        alert, flow, _ = _pin_flow()
+        assert _v7(alert, flow) == _v7(alert, list(reversed(flow)))
+
+    def test_builds_flow_context_when_not_given(self):
+        alert, flow, _ = _pin_flow()
+        built = PromptBuilder("verdict_v7").build(alert=alert, correlated_events=flow)
+        assert built == _v7(alert, flow)
+
+    def test_rule_text_points_at_new_sections(self):
+        alert, flow, _ = _pin_flow()
+        prompt = _v7(alert, flow)
+        assert "co-alerts on the same flow (listed under OTHER ACTIVITY ON THIS FLOW)" in prompt
+        assert "visible in THIS TRANSACTION or OTHER ACTIVITY ON THIS FLOW." in prompt
+
+    def test_only_flow_section_and_rule_4_pointers_differ_from_v6(self):
+        v6 = (_PROMPTS_DIR / "verdict_v6.j2").read_text(encoding="utf-8").splitlines()
+        v7 = (_PROMPTS_DIR / "verdict_v7.j2").read_text(encoding="utf-8").splitlines()
+        cut6 = v6.index("## CORRELATED FLOW CONTEXT (same flow_id = same network connection)")
+        cut7 = v7.index("## THIS TRANSACTION (the alert's own request and response on this flow)")
+        head6, head7 = v6[:cut6], v7[:cut7]
+        assert len(head6) == len(head7)
+        changed = [i for i, (a, b) in enumerate(zip(head6, head7)) if a != b]
+        assert len(changed) == 1  # Rule 4
+        restored = head7[changed[0]].replace(
+            " (listed under OTHER ACTIVITY ON THIS FLOW)", ""
+        ).replace(
+            "visible in THIS TRANSACTION or OTHER ACTIVITY ON THIS FLOW.",
+            "visible in correlated events.",
+        )
+        assert restored == head6[changed[0]]
+        tail = "Respond with JSON only:"
+        assert v6[v6.index(tail):] == v7[v7.index(tail):]

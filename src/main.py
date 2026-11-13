@@ -234,6 +234,7 @@ def _build_lifespan(cfg: dict[str, Any]):
                 geoip_client=geoip_client,
                 rdap_client=rdap_client,
                 daily_cap=cfg["daily_cap"],
+                context_delay_seconds=cfg["context_delay_s"],
             )
             background_tasks.append(
                 asyncio.create_task(pipeline.run(), name="eve_pipeline")

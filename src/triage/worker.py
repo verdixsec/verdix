@@ -31,6 +31,7 @@ from typing import Any
 
 import structlog
 
+from src.domain.flow_context import FlowContext, build_flow_context
 from src.domain.role_assignment.assigner import assign_roles
 from src.domain.role_assignment.models import RoleAssignment
 from src.enrichment.models import (
@@ -84,6 +85,11 @@ class TriageWorker:
         geoip_client:       Optional GeoIPClient; None → NOT_CONFIGURED.
         rdap_client:        Optional RDAPClient; None → NOT_CONFIGURED.
         daily_cap:          Max alerts auto-analyzed per day (VX_TRIAGE_DAILY_CAP).
+        context_delay_seconds: VX_FLOW_CONTEXT_DELAY_SECONDS (ADR-002). Upper
+                            bound of the correlated-context window, past the
+                            alert's timestamp, for flow-context prompt versions.
+        prompt_version:     Prompt template to render; None uses the
+                            PromptBuilder default.
     """
 
     def __init__(
@@ -98,6 +104,8 @@ class TriageWorker:
         geoip_client: Any = None,
         rdap_client: Any = None,
         daily_cap: int = _DEFAULT_DAILY_CAP,
+        context_delay_seconds: float = 30.0,
+        prompt_version: str | None = None,
     ) -> None:
         self._event_store = event_store
         self._operational_store = operational_store
@@ -108,7 +116,10 @@ class TriageWorker:
         self._geoip = geoip_client
         self._rdap = rdap_client
         self._daily_cap = daily_cap
-        self._prompt_builder = PromptBuilder()
+        self._context_delay_seconds = context_delay_seconds
+        self._prompt_builder = (
+            PromptBuilder(prompt_version) if prompt_version else PromptBuilder()
+        )
 
     async def run(self) -> None:
         """Main dequeue loop — runs until the task is cancelled."""
@@ -180,6 +191,17 @@ class TriageWorker:
                 correlated_rows = await self._event_store.get_correlated_events(flow_id)
             correlated_events = [json.loads(r["raw_eve"]) for r in correlated_rows]
 
+            # ADR-025: prompt versions that render the two-section flow context
+            # get the bounded, self-excluded selection, and everything below
+            # (indicators, prompt, evidence chain) uses it. Earlier versions
+            # keep the whole-flow list unchanged.
+            flow_context: FlowContext | None = None
+            if self._prompt_builder.uses_flow_context:
+                flow_context = build_flow_context(
+                    raw_eve, correlated_events, self._context_delay_seconds
+                )
+                correlated_events = flow_context.selected
+
             # 2. Role assignment.
             role = assign_roles(raw_eve, self._config)
             await self._event_store.update_alert_role_assignment(alert_id, role)
@@ -240,6 +262,7 @@ class TriageWorker:
                 enrichment_context=enrichment_ctx,
                 src_hostname=src_identity.hostname if src_identity else None,
                 dst_hostname=dst_identity.hostname if dst_identity else None,
+                flow_context=flow_context,
             )
 
             # 7. LLM verdict.

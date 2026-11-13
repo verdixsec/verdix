@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from eval.corpus.schema import EvalResult, VerdictCategory
 from eval.scoring import EvalMetrics
@@ -91,10 +92,16 @@ def print_report(metrics: EvalMetrics, results: list[EvalResult]) -> None:
 
 
 def save_json_report(
-    metrics: EvalMetrics, results: list[EvalResult], output_path: Path, prompt_version: str
+    metrics: EvalMetrics,
+    results: list[EvalResult],
+    output_path: Path,
+    prompt_version: str,
+    context_delay_seconds: float | None = None,
 ) -> None:
-    data = {
-        "prompt_version": prompt_version,
+    data: dict[str, Any] = {"prompt_version": prompt_version}
+    if context_delay_seconds is not None:
+        data["context_delay_seconds"] = context_delay_seconds
+    data |= {
         "metrics": {
             "total": metrics.total,
             "errors": metrics.errors,

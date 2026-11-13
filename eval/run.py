@@ -21,7 +21,7 @@ import click
 
 from eval.corpus.loader import load_corpus
 from eval.corpus.schema import CorpusEntry, EvalResult
-from eval.pipeline import PROMPT_VERSION, evaluate_entry
+from eval.pipeline import DEFAULT_CONTEXT_DELAY_SECONDS, PROMPT_VERSION, evaluate_entry
 from eval.report import print_report, save_json_report
 from eval.scoring import compute_metrics
 from src.infra.logging import configure_logging
@@ -116,6 +116,15 @@ from src.llm.ollama_client import OllamaClient
     "to score a candidate template before it becomes the pin. Omit to use the "
     "pinned default. Flows into the saved report's prompt_version field.",
 )
+@click.option(
+    "--context-delay-seconds",
+    default=DEFAULT_CONTEXT_DELAY_SECONDS,
+    show_default=True,
+    type=float,
+    help="Flow-context window past the alert timestamp, matching the worker's "
+    "VX_FLOW_CONTEXT_DELAY_SECONDS. Applies only to corpus entries that carry "
+    "flow_events (the Suricata 8 corpus) under a flow-context template.",
+)
 def main(
     corpus: Path,
     provider: str,
@@ -130,6 +139,7 @@ def main(
     temperature: float | None,
     num_thread: int | None,
     prompt_version: str | None,
+    context_delay_seconds: float,
 ) -> None:
     configure_logging("INFO")
     entries = load_corpus(corpus)
@@ -181,13 +191,24 @@ def main(
             f"Prompt version: {effective_prompt_version}  (override of pinned {PROMPT_VERSION})"
         )
     click.echo()
-    results = asyncio.run(_evaluate_all(entries, client, prompt_version=prompt_version))
+    has_flow_events = any(e.flow_events is not None for e in entries)
+    if has_flow_events:
+        click.echo(f"Context delay: {context_delay_seconds} s (entries with flow_events)")
+    results = asyncio.run(
+        _evaluate_all(
+            entries, client, prompt_version=prompt_version,
+            context_delay_seconds=context_delay_seconds,
+        )
+    )
 
     metrics = compute_metrics(results)
     print_report(metrics, results)
 
     if output:
-        save_json_report(metrics, results, output, prompt_version=effective_prompt_version)
+        save_json_report(
+            metrics, results, output, prompt_version=effective_prompt_version,
+            context_delay_seconds=context_delay_seconds if has_flow_events else None,
+        )
 
     # Exit 1 if below ship bar
     if metrics.verdict_accuracy < 0.80 or metrics.false_negative_rate > 0.05:
@@ -198,13 +219,17 @@ async def _evaluate_all(
     entries: list[CorpusEntry],
     client: LLMProvider,
     prompt_version: str | None = None,
+    context_delay_seconds: float = DEFAULT_CONTEXT_DELAY_SECONDS,
 ) -> list[EvalResult]:
     results: list[EvalResult] = []
     with click.progressbar(
         entries, label="Evaluating", item_show_func=lambda e: e.alert_id if e else ""
     ) as bar:
         for entry in bar:
-            result = await evaluate_entry(entry, client, prompt_version=prompt_version)
+            result = await evaluate_entry(
+                entry, client, prompt_version=prompt_version,
+                context_delay_seconds=context_delay_seconds,
+            )
             results.append(result)
     return results
 

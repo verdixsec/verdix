@@ -8,7 +8,7 @@ An open-source triage copilot for Suricata alerts, running entirely on your hard
 
 ![Verdix queue view: analyzed Suricata alerts, each with a true-positive, false-positive, or investigate verdict and a confidence score](docs/images/queue.png)
 
-[![Version: v0.3.3](https://img.shields.io/badge/version-v0.3.3-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.3.3)
+[![Version: v0.4.0](https://img.shields.io/badge/version-v0.4.0-blue)](https://github.com/verdixsec/verdix/releases/tag/v0.4.0)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 </div>
@@ -81,20 +81,26 @@ If something doesn't work, see [Troubleshooting](docs/DEPLOYMENT.md#troubleshoot
 
 Before building Verdix, we built an independent evaluation harness and assembled a labeled corpus of real Suricata alerts. The numbers below are its output, not our estimates.
 
+Measured on the 308-entry Suricata 8 eval corpus:
+
 | Metric | Result |
 |---|---|
-| Verdict accuracy (development set) | **78.47%** |
-| Verdict accuracy (held-out set) | **81.13%** |
-| False-negative rate | **0.0%** |
+| Verdict accuracy (development set, 255 alerts) | **78.43%** (200/255) |
+| Verdict accuracy (held-out set, 53 alerts) | **62.26%** (33/53) |
+| Verdict accuracy (combined, 308 alerts) | **75.65%** (233/308) |
+| Missed threats (true positive called false positive) | **1 of 182** |
+| Wrongly dismissed (development set) | **4 of 255** |
 | Structured output reliability | **100%** |
 
-The corpus holds 327 alerts, each labeled with a ground-truth verdict by an experienced analyst. We split it into a 274-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
+The corpus holds 308 alerts, each labeled with a ground-truth verdict by an experienced analyst. Every alert was produced by replaying its PCAP through Suricata 8 with Emerging Threats Open rules, and each alert's context is built with the same code the product uses. We split it into a 255-alert development set and a 53-alert held-out test set along source and family boundaries, so no alert family appears in both; the held-out alerts come from sources the prompt was never tuned against. Every verdict ran at temperature 0 (greedy decoding), so the score is deterministic and reproduces run to run.
 
 Each entry carries a fixed set of threat-intelligence labels curated when the corpus was built. Most of these PCAPs are a few years old and their indicators no longer return results from live VirusTotal, so the labels come from the IOCs the PCAP authors published alongside the captures. The harness renders them into the same prompt template the product uses. It makes no live VirusTotal, RDAP, or GeoIP calls, so these figures measure verdict quality given that context rather than the enrichment pipeline itself.
 
-The corpus is built from malware PCAPs replayed through Emerging Threats Open rules, plus benign traffic from three sources: IoT-23 (a labeled academic honeypot-capture dataset), a capture of a personal host, and scripted traffic that trips Emerging Threats rules without being malicious. It covers the categories Suricata sensors actually fire on: infostealers, RATs, loaders, and C2 frameworks (Lumma, AsyncRAT, AgentTesla, Remcos, RedLine, Cobalt Strike, and others).
+The corpus is built from malware PCAPs plus benign traffic from two sources: IoT-23 (a labeled academic honeypot-capture dataset) and scripted traffic that trips Emerging Threats rules without being malicious. It covers the categories Suricata sensors actually fire on: infostealers, RATs, loaders, and C2 frameworks (Lumma, AsyncRAT, AgentTesla, Remcos, RedLine, Cobalt Strike, and others).
 
-**0.0% false-negative rate.** Measured on the eval harness with static, curated threat-intel labels and no live enrichment calls: zero of 163 true-positive alerts in the development set and zero of 14 in the held-out set were predicted as false positives; a suspicious_investigate call on a true-positive alert scores as a miss, not a false negative. The target is ≤5%; zero is the strongest possible result. Missing a real threat is the worst outcome for a security tool, so this is the number we watch most closely.
+**Why the held-out figure is lower.** 23 of the 53 held-out alerts are scripted benign traffic. The script sends dozens of DNS lookups from one source port, so each alert sits among many other lookups and co-alerts on the same flow, and the model reads that burst as corroboration. It gets 5 of those 23 right. On the held-out alerts from real captures it gets 27 of 29 right.
+
+**Missed threats and wrongly dismissed alerts.** A missed threat is a true-positive alert called a false positive: 1 of 182 across the corpus. Wrongly dismissed also counts a suspicious alert called a false positive: 4 of 255 on the development set. A suspicious_investigate call on a true-positive alert sends it to an analyst, so it is not counted as either. Missing a real threat is the worst outcome for a security tool, so these are the numbers we watch most closely.
 
 All verdicts were generated by `gemma4:e4b-it-q8_0` (Google's Gemma 4, running locally inside Docker via Ollama). No alert data left the evaluation machine.
 

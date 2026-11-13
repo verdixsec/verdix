@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 
-_VERSION = "0.3.3"
+_VERSION = "0.4.0"
 _DEFAULT_CA_BUNDLE_PATH = "/host/certs/ca-bundle.pem"
 
 
